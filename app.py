@@ -93,17 +93,38 @@ def init_db():
     print("✅ Base de datos inicializada correctamente")
 
 # ============================================
-# MÓDULO EMPLEADOS (CRUD COMPLETO)
+# MÓDULO EMPLEADOS (CRUD COMPLETO + FILTROS)
 # ============================================
 @app.route('/api/empleados', methods=['GET'])
 def get_empleados():
+    # Leer los filtros de la URL
+    search = request.args.get('search', '')
+    sucursal_id = request.args.get('sucursal_id', '')
+    
     conn = get_db_connection()
     if not conn: return jsonify([])
     cur = conn.cursor()
-    cur.execute('SELECT * FROM empleados WHERE activo = 1 ORDER BY nombres')
+    
+    # Construir la consulta SQL dinámicamente
+    query = "SELECT * FROM empleados WHERE activo = 1"
+    params = []
+    
+    if sucursal_id:
+        query += " AND sucursal_id = %s"
+        params.append(sucursal_id)
+        
+    if search:
+        query += " AND (cedula ILIKE %s OR nombres ILIKE %s OR apellidos ILIKE %s)"
+        search_pattern = f"%{search}%"
+        params.extend([search_pattern, search_pattern, search_pattern])
+        
+    query += " ORDER BY nombres"
+    
+    cur.execute(query, params)
     rows = cur.fetchall()
     cur.close()
     conn.close()
+    
     empleados = []
     for row in rows:
         empleados.append({
