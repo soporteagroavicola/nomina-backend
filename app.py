@@ -112,7 +112,8 @@ def get_empleados():
             'fecha_ingreso': row[5].isoformat() if row[5] else None,
             'cargo': row[6], 'departamento': row[7], 'sucursal_id': row[8],
             'salario_mensual_usd': float(row[9]) if row[9] else 0,
-            'tipo_pago': row[10], 'activo': row[11], 'email': row[12], 'telefono': row[13], 'direccion': row[14]
+            'tipo_pago': row[10], 'activo': row[11], 'email': row[12], 'telefono': row[13], 'direccion': row[14],
+            'cuenta_bancaria': row[15]
         })
     return jsonify(empleados)
 
@@ -124,9 +125,9 @@ def crear_empleado():
     cur = conn.cursor()
     try:
         cur.execute('''
-            INSERT INTO empleados (cedula, nombres, apellidos, fecha_nacimiento, fecha_ingreso, cargo, departamento, sucursal_id, salario_mensual_usd, tipo_pago, email, telefono, direccion)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-        ''', (data['cedula'], data['nombres'], data['apellidos'], data['fecha_nacimiento'], data['fecha_ingreso'], data['cargo'], data['departamento'], data['sucursal_id'], data['salario_mensual_usd'], data['tipo_pago'], data.get('email'), data.get('telefono'), data.get('direccion')))
+            INSERT INTO empleados (cedula, nombres, apellidos, fecha_nacimiento, fecha_ingreso, cargo, departamento, sucursal_id, salario_mensual_usd, tipo_pago, email, telefono, direccion, cuenta_bancaria)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        ''', (data['cedula'], data['nombres'], data['apellidos'], data['fecha_nacimiento'], data['fecha_ingreso'], data['cargo'], data['departamento'], data['sucursal_id'], data['salario_mensual_usd'], data['tipo_pago'], data.get('email'), data.get('telefono'), data.get('direccion'), data.get('cuenta_bancaria')))
         conn.commit()
         return jsonify({'mensaje': 'Empleado creado exitosamente'})
     except Exception as e:
@@ -142,9 +143,9 @@ def actualizar_empleado(id):
     cur = conn.cursor()
     try:
         cur.execute('''
-            UPDATE empleados SET cedula=%s, nombres=%s, apellidos=%s, fecha_nacimiento=%s, fecha_ingreso=%s, cargo=%s, departamento=%s, sucursal_id=%s, salario_mensual_usd=%s, tipo_pago=%s, email=%s, telefono=%s, direccion=%s
+            UPDATE empleados SET cedula=%s, nombres=%s, apellidos=%s, fecha_nacimiento=%s, fecha_ingreso=%s, cargo=%s, departamento=%s, sucursal_id=%s, salario_mensual_usd=%s, tipo_pago=%s, email=%s, telefono=%s, direccion=%s, cuenta_bancaria=%s
             WHERE id_empleado=%s
-        ''', (data['cedula'], data['nombres'], data['apellidos'], data['fecha_nacimiento'], data['fecha_ingreso'], data['cargo'], data['departamento'], data['sucursal_id'], data['salario_mensual_usd'], data['tipo_pago'], data.get('email'), data.get('telefono'), data.get('direccion'), id))
+        ''', (data['cedula'], data['nombres'], data['apellidos'], data['fecha_nacimiento'], data['fecha_ingreso'], data['cargo'], data['departamento'], data['sucursal_id'], data['salario_mensual_usd'], data['tipo_pago'], data.get('email'), data.get('telefono'), data.get('direccion'), data.get('cuenta_bancaria'), id))
         conn.commit()
         return jsonify({'mensaje': 'Empleado actualizado exitosamente'})
     except Exception as e:
@@ -167,7 +168,7 @@ def eliminar_empleado(id):
         cur.close(); conn.close()
 
 # ============================================
-# MÓDULO SUCURSALES (CRUD COMPLETO) ¡AQUÍ ESTABA EL FALLO!
+# MÓDULO SUCURSALES (CRUD COMPLETO)
 # ============================================
 @app.route('/api/sucursales', methods=['GET'])
 def get_sucursales():
