@@ -20,6 +20,8 @@ def init_db():
     conn = get_db_connection()
     if not conn: return
     cur = conn.cursor()
+    
+    # Crear tablas si no existen
     cur.execute('''
         CREATE TABLE IF NOT EXISTS empleados (
             id_empleado SERIAL PRIMARY KEY, cedula TEXT UNIQUE NOT NULL, nombres TEXT NOT NULL, apellidos TEXT NOT NULL,
@@ -40,9 +42,13 @@ def init_db():
             horas_extras_usd REAL DEFAULT 0, total_asignaciones_usd REAL, total_deducciones_usd REAL,
             neto_pagar_usd REAL, neto_pagar_bs REAL, tasa_bcv REAL, fecha_calculo DATE,
             sso_usd REAL DEFAULT 0, rpe_usd REAL DEFAULT 0, faov_usd REAL DEFAULT 0,
-            sso_bs REAL DEFAULT 0, rpe_bs REAL DEFAULT 0, faov_bs REAL DEFAULT 0
+            sso_bs REAL DEFAULT 0, rpe_bs REAL DEFAULT 0, faov_bs REAL DEFAULT 0,
+            descripcion TEXT
         )
     ''')
+    # 🆕 Añadir la columna 'descripcion' si la tabla ya existía
+    cur.execute("ALTER TABLE nominas ADD COLUMN IF NOT EXISTS descripcion TEXT")
+
     cur.execute('''
         CREATE TABLE IF NOT EXISTS parametros (
             id SERIAL PRIMARY KEY, clave TEXT UNIQUE NOT NULL, valor REAL NOT NULL, fecha_actualizacion DATE
@@ -62,7 +68,7 @@ def init_db():
     print("✅ Base de datos inicializada correctamente")
 
 # ============================================
-# MÓDULO EMPLEADOS (CRUD + FILTROS)
+# MÓDULO EMPLEADOS
 # ============================================
 @app.route('/api/empleados', methods=['GET'])
 def get_empleados():
@@ -103,21 +109,6 @@ def crear_empleado():
             VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         ''', (data['cedula'], data['nombres'], data['apellidos'], data['fecha_nacimiento'], data['fecha_ingreso'], data['cargo'], data['departamento'], data['sucursal_id'], data['salario_mensual_usd'], data['tipo_pago'], data.get('email'), data.get('telefono'), data.get('direccion'), data.get('cuenta_bancaria')))
         conn.commit(); return jsonify({'mensaje': 'Empleado creado exitosamente'})
-    except Exception as e: return jsonify({'error': str(e)}), 400
-    finally: cur.close(); conn.close()
-
-@app.route('/api/empleados/<int:id>', methods=['PUT'])
-def actualizar_empleado(id):
-    data = request.json
-    conn = get_db_connection()
-    if not conn: return jsonify({'error': 'Error de conexión'}), 500
-    cur = conn.cursor()
-    try:
-        cur.execute('''
-            UPDATE empleados SET cedula=%s, nombres=%s, apellidos=%s, fecha_nacimiento=%s, fecha_ingreso=%s, cargo=%s, departamento=%s, sucursal_id=%s, salario_mensual_usd=%s, tipo_pago=%s, email=%s, telefono=%s, direccion=%s, cuenta_bancaria=%s
-            WHERE id_empleado=%s
-        ''', (data['cedula'], data['nombres'], data['apellidos'], data['fecha_nacimiento'], data['fecha_ingreso'], data['cargo'], data['departamento'], data['sucursal_id'], data['salario_mensual_usd'], data['tipo_pago'], data.get('email'), data.get('telefono'), data.get('direccion'), data.get('cuenta_bancaria'), id))
-        conn.commit(); return jsonify({'mensaje': 'Empleado actualizado exitosamente'})
     except Exception as e: return jsonify({'error': str(e)}), 400
     finally: cur.close(); conn.close()
 
@@ -168,21 +159,13 @@ def eliminar_sucursal(id):
     finally: cur.close(); conn.close()
 
 # ============================================
-# MÓDULO NÓMINA Y PARÁMETROS (CALCULAR)
+# MÓDULO CALCULAR NÓMINA (Con descripción)
 # ============================================
-@app.route('/api/parametros', methods=['GET'])
-def get_parametros():
-    conn = get_db_connection()
-    if not conn: return jsonify({})
-    cur = conn.cursor()
-    cur.execute("SELECT clave, valor FROM parametros")
-    rows = cur.fetchall(); cur.close(); conn.close()
-    return jsonify({row[0]: float(row[1]) for row in rows})
-
 @app.route('/api/calcular_nomina', methods=['POST'])
 def calcular_nomina():
     data = request.json
     tipo, fecha_inicio, fecha_fin = data.get('tipo'), data.get('fecha_inicio'), data.get('fecha_fin')
+    descripcion = data.get('descripcion', '') # 🆕 Recibir descripción
     empleados_ids, faltas_dict, horas_extras_dict = data.get('empleados_ids', []), data.get('faltas', {}), data.get('horas_extras', {})
     if not fecha_inicio or not fecha_fin or not empleados_ids: return jsonify({'error': 'Faltan datos'}), 400
     conn = get_db_connection()
@@ -221,22 +204,19 @@ def calcular_nomina():
         }
         resultados.append(calculo)
         
-        # ⚠️ ESTA ES LA PARTE QUE ESTABA MAL Y YA ESTÁ CORREGIDA ⚠️
         cur.execute('''
             INSERT INTO nominas (
-                id_empleado, fecha_inicio, fecha_fin, tipo,
-                faltas_dias, salario_base_usd, horas_extras_usd,
-                total_asignaciones_usd, total_deducciones_usd,
-                neto_pagar_usd, neto_pagar_bs, tasa_bcv, fecha_calculo,
-                sso_usd, rpe_usd, faov_usd, sso_bs, rpe_bs, faov_bs
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-        ''', (emp[0], fecha_inicio, fecha_fin, tipo, calculo['faltas_dias'], calculo['salario_base_usd'], calculo['horas_extras_usd'], calculo['total_asignaciones_usd'], calculo['total_deducciones_usd'], calculo['neto_pagar_usd'], calculo['neto_pagar_bs'], tasa_bcv, datetime.now().date(), calculo['sso_usd'], calculo['rpe_usd'], calculo['faov_usd'], calculo['sso_usd'] * tasa_bcv, calculo['rpe_usd'] * tasa_bcv, calculo['faov_usd'] * tasa_bcv))
+                id_empleado, fecha_inicio, fecha_fin, tipo, faltas_dias, salario_base_usd, horas_extras_usd,
+                total_asignaciones_usd, total_deducciones_usd, neto_pagar_usd, neto_pagar_bs, tasa_bcv, fecha_calculo,
+                sso_usd, rpe_usd, faov_usd, sso_bs, rpe_bs, faov_bs, descripcion
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        ''', (emp[0], fecha_inicio, fecha_fin, tipo, calculo['faltas_dias'], calculo['salario_base_usd'], calculo['horas_extras_usd'], calculo['total_asignaciones_usd'], calculo['total_deducciones_usd'], calculo['neto_pagar_usd'], calculo['neto_pagar_bs'], tasa_bcv, datetime.now().date(), calculo['sso_usd'], calculo['rpe_usd'], calculo['faov_usd'], calculo['sso_usd'] * tasa_bcv, calculo['rpe_usd'] * tasa_bcv, calculo['faov_usd'] * tasa_bcv, descripcion))
         
     conn.commit(); cur.close(); conn.close()
     return jsonify({'tasa_bcv': tasa_bcv, 'resultados': resultados})
 
 # ============================================
-# MÓDULO HISTORIAL DE NÓMINAS (CRUD)
+# MÓDULO HISTORIAL DE NÓMINAS
 # ============================================
 @app.route('/api/nominas', methods=['GET'])
 def get_historico_nominas():
@@ -270,7 +250,8 @@ def get_historico_nominas():
         'fecha_calculo': r[13].isoformat(),
         'sso_usd': float(r[14]) if r[14] else 0, 'rpe_usd': float(r[15]) if r[15] else 0, 'faov_usd': float(r[16]) if r[16] else 0,
         'sso_bs': float(r[17]) if r[17] else 0, 'rpe_bs': float(r[18]) if r[18] else 0, 'faov_bs': float(r[19]) if r[19] else 0,
-        'nombres': r[20], 'apellidos': r[21], 'cedula': r[22], 'sucursal_id': r[23], 'sucursal_nombre': r[24]
+        'descripcion': r[20], # 🆕 Leer descripción
+        'nombres': r[21], 'apellidos': r[22], 'cedula': r[23], 'sucursal_id': r[24], 'sucursal_nombre': r[25]
     } for r in rows])
 
 @app.route('/api/nominas/<int:id>', methods=['GET'])
@@ -297,7 +278,8 @@ def get_nomina_por_id(id):
         'fecha_calculo': row[13].isoformat(),
         'sso_usd': float(row[14]) if row[14] else 0, 'rpe_usd': float(row[15]) if row[15] else 0, 'faov_usd': float(row[16]) if row[16] else 0,
         'sso_bs': float(row[17]) if row[17] else 0, 'rpe_bs': float(row[18]) if row[18] else 0, 'faov_bs': float(row[19]) if row[19] else 0,
-        'nombres': row[20], 'apellidos': row[21], 'cedula': row[22], 'sucursal_id': row[23], 'sucursal_nombre': row[24]
+        'descripcion': row[20],
+        'nombres': row[21], 'apellidos': row[22], 'cedula': row[23], 'sucursal_id': row[24], 'sucursal_nombre': row[25]
     })
 
 @app.route('/api/nominas/<int:id>', methods=['PUT'])
