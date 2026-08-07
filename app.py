@@ -2,7 +2,7 @@ import os
 import psycopg2
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-from datetime import datetime, timedelta  # 🆕 Importamos timedelta para calcular fechas
+from datetime import datetime, timedelta
 
 app = Flask(__name__)
 CORS(app)
@@ -64,7 +64,7 @@ def init_db():
     print("✅ Base de datos inicializada correctamente")
 
 # ============================================
-# MÓDULO EMPLEADOS Y SUCURSALES
+# MÓDULO EMPLEADOS
 # ============================================
 @app.route('/api/empleados', methods=['GET'])
 def get_empleados():
@@ -96,7 +96,10 @@ def crear_empleado():
     if not conn: return jsonify({'error': 'Error de conexión'}), 500
     cur = conn.cursor()
     try:
-        cur.execute('''INSERT INTO empleados (...) VALUES (...)''', (data['cedula'], data['nombres'], data['apellidos'], data['fecha_nacimiento'], data['fecha_ingreso'], data['cargo'], data['departamento'], data['sucursal_id'], data['salario_mensual_usd'], data['tipo_pago'], data.get('email'), data.get('telefono'), data.get('direccion'), data.get('cuenta_bancaria')))
+        cur.execute('''
+            INSERT INTO empleados (cedula, nombres, apellidos, fecha_nacimiento, fecha_ingreso, cargo, departamento, sucursal_id, salario_mensual_usd, tipo_pago, email, telefono, direccion, cuenta_bancaria)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        ''', (data['cedula'], data['nombres'], data['apellidos'], data['fecha_nacimiento'], data['fecha_ingreso'], data['cargo'], data['departamento'], data['sucursal_id'], data['salario_mensual_usd'], data['tipo_pago'], data.get('email'), data.get('telefono'), data.get('direccion'), data.get('cuenta_bancaria')))
         conn.commit(); return jsonify({'mensaje': 'Empleado creado exitosamente'})
     except Exception as e: return jsonify({'error': str(e)}), 400
     finally: cur.close(); conn.close()
@@ -112,6 +115,9 @@ def eliminar_empleado(id):
     except Exception as e: return jsonify({'error': str(e)}), 400
     finally: cur.close(); conn.close()
 
+# ============================================
+# MÓDULO SUCURSALES
+# ============================================
 @app.route('/api/sucursales', methods=['GET'])
 def get_sucursales():
     conn = get_db_connection()
@@ -145,7 +151,7 @@ def eliminar_sucursal(id):
     finally: cur.close(); conn.close()
 
 # ============================================
-# 🆕 MÓDULO CALCULAR NÓMINA (CÁLCULO DINÁMICO DE CALENDARIO)
+# MÓDULO CALCULAR NÓMINA (CALENDARIO DINÁMICO)
 # ============================================
 @app.route('/api/calcular_nomina', methods=['POST'])
 def calcular_nomina():
@@ -185,7 +191,6 @@ def calcular_nomina():
         salario_diario = salario_mensual / 30
         total_horas_extras = horas * valor_hora
         
-        # Cálculo del salario base según el tipo
         if tipo == 'Quincenal':
             salario_base = salario_mensual / 2
             total_asignaciones = salario_base - (faltas * salario_diario) + total_horas_extras
@@ -202,15 +207,17 @@ def calcular_nomina():
             'horas_extras_usd': total_horas_extras, 'total_asignaciones_usd': total_asignaciones,
             'total_deducciones_usd': total_deducciones, 'sso_usd': ivss, 'rpe_usd': rpe, 'faov_usd': faov,
             'neto_pagar_usd': neto_usd, 'neto_pagar_bs': neto_usd * tasa_bcv, 'faltas_dias': faltas,
-            'dias_totales_periodo': total_calendar_days, # 🆕 Número de días en el período
-            'dias_descanso': rest_days,                 # 🆕 Sábados y Domingos
-            'dias_reales_trabajados': working_days,      # 🆕 Días hábiles reales
+            'dias_totales_periodo': total_calendar_days, 'dias_descanso': rest_days, 'dias_reales_trabajados': working_days,
             'empleado': {'id': emp[0], 'cedula': cedula, 'nombre_completo': f"{emp[2]} {emp[3]}"}
         }
         resultados.append(calculo)
         
         cur.execute('''
-            INSERT INTO nominas (...) VALUES (...)
+            INSERT INTO nominas (
+                id_empleado, fecha_inicio, fecha_fin, tipo, faltas_dias, salario_base_usd, horas_extras_usd,
+                total_asignaciones_usd, total_deducciones_usd, neto_pagar_usd, neto_pagar_bs, tasa_bcv, fecha_calculo,
+                sso_usd, rpe_usd, faov_usd, sso_bs, rpe_bs, faov_bs, descripcion
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         ''', (emp[0], fecha_inicio, fecha_fin, tipo, calculo['faltas_dias'], calculo['salario_base_usd'], calculo['horas_extras_usd'], calculo['total_asignaciones_usd'], calculo['total_deducciones_usd'], calculo['neto_pagar_usd'], calculo['neto_pagar_bs'], tasa_bcv, datetime.now().date(), calculo['sso_usd'], calculo['rpe_usd'], calculo['faov_usd'], calculo['sso_usd'] * tasa_bcv, calculo['rpe_usd'] * tasa_bcv, calculo['faov_usd'] * tasa_bcv, descripcion))
         
     conn.commit(); cur.close(); conn.close()
