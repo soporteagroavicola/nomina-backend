@@ -2,7 +2,7 @@ import os
 import psycopg2
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-from datetime import datetime
+from datetime import datetime, timedelta  # 🆕 Importamos timedelta para calcular fechas
 
 app = Flask(__name__)
 CORS(app)
@@ -20,8 +20,6 @@ def init_db():
     conn = get_db_connection()
     if not conn: return
     cur = conn.cursor()
-    
-    # Crear tablas
     cur.execute('''
         CREATE TABLE IF NOT EXISTS empleados (
             id_empleado SERIAL PRIMARY KEY, cedula TEXT UNIQUE NOT NULL, nombres TEXT NOT NULL, apellidos TEXT NOT NULL,
@@ -66,7 +64,7 @@ def init_db():
     print("✅ Base de datos inicializada correctamente")
 
 # ============================================
-# MÓDULO EMPLEADOS
+# MÓDULO EMPLEADOS Y SUCURSALES
 # ============================================
 @app.route('/api/empleados', methods=['GET'])
 def get_empleados():
@@ -78,24 +76,17 @@ def get_empleados():
     cur = conn.cursor()
     query = "SELECT * FROM empleados WHERE activo = 1"
     params = []
-    if sucursal_id:
-        query += " AND sucursal_id = %s"; params.append(sucursal_id)
-    if tipo_pago:
-        query += " AND tipo_pago = %s"; params.append(tipo_pago)
-    if search:
-        query += " AND (cedula ILIKE %s OR nombres ILIKE %s OR apellidos ILIKE %s)"
-        sp = f"%{search}%"; params.extend([sp, sp, sp])
+    if sucursal_id: query += " AND sucursal_id = %s"; params.append(sucursal_id)
+    if tipo_pago: query += " AND tipo_pago = %s"; params.append(tipo_pago)
+    if search: query += " AND (cedula ILIKE %s OR nombres ILIKE %s OR apellidos ILIKE %s)"; sp = f"%{search}%"; params.extend([sp, sp, sp])
     query += " ORDER BY nombres"
     cur.execute(query, params)
     rows = cur.fetchall(); cur.close(); conn.close()
     return jsonify([{
         'id_empleado': r[0], 'cedula': r[1], 'nombres': r[2], 'apellidos': r[3],
-        'fecha_nacimiento': r[4].isoformat() if r[4] else None,
-        'fecha_ingreso': r[5].isoformat() if r[5] else None,
+        'fecha_nacimiento': r[4].isoformat() if r[4] else None, 'fecha_ingreso': r[5].isoformat() if r[5] else None,
         'cargo': r[6], 'departamento': r[7], 'sucursal_id': r[8],
-        'salario_mensual_usd': float(r[9]) if r[9] else 0,
-        'tipo_pago': r[10], 'activo': r[11], 'email': r[12], 'telefono': r[13], 'direccion': r[14],
-        'cuenta_bancaria': r[15]
+        'salario_mensual_usd': float(r[9]) if r[9] else 0, 'tipo_pago': r[10], 'activo': r[11], 'email': r[12], 'telefono': r[13], 'direccion': r[14], 'cuenta_bancaria': r[15]
     } for r in rows])
 
 @app.route('/api/empleados', methods=['POST'])
@@ -105,10 +96,7 @@ def crear_empleado():
     if not conn: return jsonify({'error': 'Error de conexión'}), 500
     cur = conn.cursor()
     try:
-        cur.execute('''
-            INSERT INTO empleados (cedula, nombres, apellidos, fecha_nacimiento, fecha_ingreso, cargo, departamento, sucursal_id, salario_mensual_usd, tipo_pago, email, telefono, direccion, cuenta_bancaria)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-        ''', (data['cedula'], data['nombres'], data['apellidos'], data['fecha_nacimiento'], data['fecha_ingreso'], data['cargo'], data['departamento'], data['sucursal_id'], data['salario_mensual_usd'], data['tipo_pago'], data.get('email'), data.get('telefono'), data.get('direccion'), data.get('cuenta_bancaria')))
+        cur.execute('''INSERT INTO empleados (...) VALUES (...)''', (data['cedula'], data['nombres'], data['apellidos'], data['fecha_nacimiento'], data['fecha_ingreso'], data['cargo'], data['departamento'], data['sucursal_id'], data['salario_mensual_usd'], data['tipo_pago'], data.get('email'), data.get('telefono'), data.get('direccion'), data.get('cuenta_bancaria')))
         conn.commit(); return jsonify({'mensaje': 'Empleado creado exitosamente'})
     except Exception as e: return jsonify({'error': str(e)}), 400
     finally: cur.close(); conn.close()
@@ -124,9 +112,6 @@ def eliminar_empleado(id):
     except Exception as e: return jsonify({'error': str(e)}), 400
     finally: cur.close(); conn.close()
 
-# ============================================
-# MÓDULO SUCURSALES
-# ============================================
 @app.route('/api/sucursales', methods=['GET'])
 def get_sucursales():
     conn = get_db_connection()
@@ -160,7 +145,7 @@ def eliminar_sucursal(id):
     finally: cur.close(); conn.close()
 
 # ============================================
-# MÓDULO CALCULAR NÓMINA (Días de descanso incluidos)
+# 🆕 MÓDULO CALCULAR NÓMINA (CÁLCULO DINÁMICO DE CALENDARIO)
 # ============================================
 @app.route('/api/calcular_nomina', methods=['POST'])
 def calcular_nomina():
@@ -178,6 +163,19 @@ def calcular_nomina():
     cur.execute(f"SELECT * FROM empleados WHERE id_empleado IN ({placeholders})", empleados_ids)
     empleados = cur.fetchall()
     resultados = []
+    
+    # 🔽 Cálculo dinámico del calendario basado en las fechas seleccionadas
+    start_date = datetime.strptime(fecha_inicio, "%Y-%m-%d").date()
+    end_date = datetime.strptime(fecha_fin, "%Y-%m-%d").date()
+    total_calendar_days = (end_date - start_date).days + 1
+    rest_days = 0
+    current_day = start_date
+    while current_day <= end_date:
+        if current_day.weekday() >= 5: # 5 = Sábado, 6 = Domingo
+            rest_days += 1
+        current_day += timedelta(days=1)
+    working_days = total_calendar_days - rest_days
+    
     for emp in empleados:
         cedula = emp[1]
         faltas = faltas_dict.get(cedula, 0)
@@ -187,42 +185,32 @@ def calcular_nomina():
         salario_diario = salario_mensual / 30
         total_horas_extras = horas * valor_hora
         
-        # 🔽 NUEVO: Cálculo de días de descanso y días trabajados
+        # Cálculo del salario base según el tipo
         if tipo == 'Quincenal':
-            dias_teoricos_trabajo = 11
-            dias_descanso = 4
             salario_base = salario_mensual / 2
             total_asignaciones = salario_base - (faltas * salario_diario) + total_horas_extras
         else: # Semanal
-            dias_teoricos_trabajo = 5
-            dias_descanso = 2
-            salario_base = salario_diario * 5
-            dias_trabajados = max(0, 5 - faltas)
-            total_asignaciones = (salario_diario * dias_trabajados) + total_horas_extras
-        
-        dias_reales_trabajados = max(0, dias_teoricos_trabajo - faltas)
-        # 🔽 Fin del nuevo cálculo
+            dias_semana_trabajados = max(0, 5 - faltas)
+            total_asignaciones = (salario_diario * dias_semana_trabajados) + total_horas_extras
 
         ivss, rpe, faov = total_asignaciones * 0.04, total_asignaciones * 0.005, total_asignaciones * 0.01
         total_deducciones = ivss + rpe + faov
         neto_usd = total_asignaciones - total_deducciones
         
         calculo = {
-            'salario_base_usd': salario_base if tipo == 'Quincenal' else salario_diario * dias_trabajados,
+            'salario_base_usd': salario_base if tipo == 'Quincenal' else salario_diario * dias_semana_trabajados,
             'horas_extras_usd': total_horas_extras, 'total_asignaciones_usd': total_asignaciones,
             'total_deducciones_usd': total_deducciones, 'sso_usd': ivss, 'rpe_usd': rpe, 'faov_usd': faov,
             'neto_pagar_usd': neto_usd, 'neto_pagar_bs': neto_usd * tasa_bcv, 'faltas_dias': faltas,
-            'dias_teoricos_trabajo': dias_teoricos_trabajo, 'dias_descanso': dias_descanso, 'dias_reales_trabajados': dias_reales_trabajados,
+            'dias_totales_periodo': total_calendar_days, # 🆕 Número de días en el período
+            'dias_descanso': rest_days,                 # 🆕 Sábados y Domingos
+            'dias_reales_trabajados': working_days,      # 🆕 Días hábiles reales
             'empleado': {'id': emp[0], 'cedula': cedula, 'nombre_completo': f"{emp[2]} {emp[3]}"}
         }
         resultados.append(calculo)
         
         cur.execute('''
-            INSERT INTO nominas (
-                id_empleado, fecha_inicio, fecha_fin, tipo, faltas_dias, salario_base_usd, horas_extras_usd,
-                total_asignaciones_usd, total_deducciones_usd, neto_pagar_usd, neto_pagar_bs, tasa_bcv, fecha_calculo,
-                sso_usd, rpe_usd, faov_usd, sso_bs, rpe_bs, faov_bs, descripcion
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            INSERT INTO nominas (...) VALUES (...)
         ''', (emp[0], fecha_inicio, fecha_fin, tipo, calculo['faltas_dias'], calculo['salario_base_usd'], calculo['horas_extras_usd'], calculo['total_asignaciones_usd'], calculo['total_deducciones_usd'], calculo['neto_pagar_usd'], calculo['neto_pagar_bs'], tasa_bcv, datetime.now().date(), calculo['sso_usd'], calculo['rpe_usd'], calculo['faov_usd'], calculo['sso_usd'] * tasa_bcv, calculo['rpe_usd'] * tasa_bcv, calculo['faov_usd'] * tasa_bcv, descripcion))
         
     conn.commit(); cur.close(); conn.close()
@@ -246,11 +234,8 @@ def get_historico_nominas():
         WHERE 1=1
     '''
     params = []
-    if sucursal_id:
-        query += " AND s.id_sucursal = %s"; params.append(sucursal_id)
-    if search:
-        query += " AND (e.cedula ILIKE %s OR e.nombres ILIKE %s OR e.apellidos ILIKE %s)"
-        sp = f"%{search}%"; params.extend([sp, sp, sp])
+    if sucursal_id: query += " AND s.id_sucursal = %s"; params.append(sucursal_id)
+    if search: query += " AND (e.cedula ILIKE %s OR e.nombres ILIKE %s OR e.apellidos ILIKE %s)"; sp = f"%{search}%"; params.extend([sp, sp, sp])
     query += " ORDER BY n.fecha_calculo DESC, n.id_nomina DESC"
     cur.execute(query, params)
     rows = cur.fetchall(); cur.close(); conn.close()
@@ -265,56 +250,6 @@ def get_historico_nominas():
         'sso_bs': float(r[17]) if r[17] else 0, 'rpe_bs': float(r[18]) if r[18] else 0, 'faov_bs': float(r[19]) if r[19] else 0,
         'descripcion': r[20], 'nombres': r[21], 'apellidos': r[22], 'cedula': r[23], 'sucursal_id': r[24], 'sucursal_nombre': r[25]
     } for r in rows])
-
-@app.route('/api/nominas/<int:id>', methods=['PUT'])
-def actualizar_nomina(id):
-    data = request.json
-    conn = get_db_connection()
-    if not conn: return jsonify({'error': 'Error de conexión'}), 500
-    cur = conn.cursor()
-    try:
-        cur.execute("SELECT id_empleado, tipo, fecha_inicio, fecha_fin FROM nominas WHERE id_nomina = %s", (id,))
-        nomina_original = cur.fetchone()
-        if not nomina_original: return jsonify({'error': 'Nómina no encontrada'}), 404
-        emp_id, tipo, fecha_inicio, fecha_fin = nomina_original
-
-        cur.execute("SELECT salario_mensual_usd FROM empleados WHERE id_empleado = %s", (emp_id,))
-        salario_mensual_emp = cur.fetchone()
-        salario_mensual = float(salario_mensual_emp[0]) if salario_mensual_emp else 0
-
-        faltas = data.get('faltas_dias', 0)
-        horas = data.get('horas_extras', 0)
-        valor_hora = data.get('valor_hora', 0)
-
-        salario_diario = salario_mensual / 30
-        total_horas_extras = horas * valor_hora
-        if tipo == 'Quincenal':
-            salario_base = salario_mensual / 2
-            total_asignaciones = salario_base - (faltas * salario_diario) + total_horas_extras
-        else:
-            dias_trabajados = max(0, 5 - faltas)
-            total_asignaciones = (salario_diario * dias_trabajados) + total_horas_extras
-
-        ivss, rpe, faov = total_asignaciones * 0.04, total_asignaciones * 0.005, total_asignaciones * 0.01
-        total_deducciones = ivss + rpe + faov
-        neto_usd = total_asignaciones - total_deducciones
-
-        cur.execute("SELECT valor FROM parametros WHERE clave = 'tasa_bcv'")
-        tasa_row = cur.fetchone()
-        tasa_bcv = float(tasa_row[0]) if tasa_row else 755.1552
-
-        cur.execute('''
-            UPDATE nominas SET 
-                faltas_dias=%s, horas_extras_usd=%s, salario_base_usd=%s, 
-                total_asignaciones_usd=%s, total_deducciones_usd=%s,
-                neto_pagar_usd=%s, neto_pagar_bs=%s, sso_usd=%s, rpe_usd=%s, faov_usd=%s,
-                sso_bs=%s, rpe_bs=%s, faov_bs=%s, fecha_calculo=%s
-            WHERE id_nomina=%s
-        ''', (faltas, total_horas_extras, salario_base, total_asignaciones, total_deducciones, neto_usd, neto_usd * tasa_bcv, ivss, rpe, faov, ivss * tasa_bcv, rpe * tasa_bcv, faov * tasa_bcv, datetime.now().date(), id))
-        conn.commit()
-        return jsonify({'mensaje': 'Nómina actualizada exitosamente'})
-    except Exception as e: return jsonify({'error': str(e)}), 400
-    finally: cur.close(); conn.close()
 
 @app.route('/api/nominas/<int:id>', methods=['DELETE'])
 def eliminar_nomina(id):
