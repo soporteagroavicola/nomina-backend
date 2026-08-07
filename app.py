@@ -211,6 +211,7 @@ def calcular_nomina():
         ivss, rpe, faov = total_asignaciones * 0.04, total_asignaciones * 0.005, total_asignaciones * 0.01
         total_deducciones = ivss + rpe + faov
         neto_usd = total_asignaciones - total_deducciones
+        
         calculo = {
             'salario_base_usd': salario_base if tipo == 'Quincenal' else salario_diario * dias_trabajados,
             'horas_extras_usd': total_horas_extras, 'total_asignaciones_usd': total_asignaciones,
@@ -219,14 +220,23 @@ def calcular_nomina():
             'empleado': {'id': emp[0], 'cedula': cedula, 'nombre_completo': f"{emp[2]} {emp[3]}"}
         }
         resultados.append(calculo)
+        
+        # ⚠️ ESTA ES LA PARTE QUE ESTABA MAL Y YA ESTÁ CORREGIDA ⚠️
         cur.execute('''
-            INSERT INTO nominas (...) VALUES (...)
+            INSERT INTO nominas (
+                id_empleado, fecha_inicio, fecha_fin, tipo,
+                faltas_dias, salario_base_usd, horas_extras_usd,
+                total_asignaciones_usd, total_deducciones_usd,
+                neto_pagar_usd, neto_pagar_bs, tasa_bcv, fecha_calculo,
+                sso_usd, rpe_usd, faov_usd, sso_bs, rpe_bs, faov_bs
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         ''', (emp[0], fecha_inicio, fecha_fin, tipo, calculo['faltas_dias'], calculo['salario_base_usd'], calculo['horas_extras_usd'], calculo['total_asignaciones_usd'], calculo['total_deducciones_usd'], calculo['neto_pagar_usd'], calculo['neto_pagar_bs'], tasa_bcv, datetime.now().date(), calculo['sso_usd'], calculo['rpe_usd'], calculo['faov_usd'], calculo['sso_usd'] * tasa_bcv, calculo['rpe_usd'] * tasa_bcv, calculo['faov_usd'] * tasa_bcv))
+        
     conn.commit(); cur.close(); conn.close()
     return jsonify({'tasa_bcv': tasa_bcv, 'resultados': resultados})
 
 # ============================================
-# NUEVO: MÓDULO HISTORIAL DE NÓMINAS (CRUD)
+# MÓDULO HISTORIAL DE NÓMINAS (CRUD)
 # ============================================
 @app.route('/api/nominas', methods=['GET'])
 def get_historico_nominas():
@@ -297,18 +307,15 @@ def actualizar_nomina(id):
     if not conn: return jsonify({'error': 'Error de conexión'}), 500
     cur = conn.cursor()
     try:
-        # Obtener el empleado y los datos actuales
-        cur.execute("SELECT id_empleado, tipo, fecha_inicio, fecha_fin, salario_base_usd FROM nominas WHERE id_nomina = %s", (id,))
+        cur.execute("SELECT id_empleado, tipo, fecha_inicio, fecha_fin FROM nominas WHERE id_nomina = %s", (id,))
         nomina_original = cur.fetchone()
         if not nomina_original: return jsonify({'error': 'Nómina no encontrada'}), 404
-        emp_id, tipo, fecha_inicio, fecha_fin, salario_base_usd = nomina_original
+        emp_id, tipo, fecha_inicio, fecha_fin = nomina_original
 
-        # Obtener el salario real del empleado para recalcular
         cur.execute("SELECT salario_mensual_usd FROM empleados WHERE id_empleado = %s", (emp_id,))
         salario_mensual_emp = cur.fetchone()
         salario_mensual = float(salario_mensual_emp[0]) if salario_mensual_emp else 0
 
-        # Recalcular con los nuevos datos de faltas y horas extras
         faltas = data.get('faltas_dias', 0)
         horas = data.get('horas_extras', 0)
         valor_hora = data.get('valor_hora', 0)
@@ -318,7 +325,7 @@ def actualizar_nomina(id):
         if tipo == 'Quincenal':
             salario_base = salario_mensual / 2
             total_asignaciones = salario_base - (faltas * salario_diario) + total_horas_extras
-        else: # Semanal
+        else:
             dias_trabajados = max(0, 5 - faltas)
             total_asignaciones = (salario_diario * dias_trabajados) + total_horas_extras
 
@@ -330,7 +337,6 @@ def actualizar_nomina(id):
         tasa_row = cur.fetchone()
         tasa_bcv = float(tasa_row[0]) if tasa_row else 755.1552
 
-        # Actualizar en BD
         cur.execute('''
             UPDATE nominas SET 
                 faltas_dias=%s, horas_extras_usd=%s, salario_base_usd=%s, 
@@ -356,9 +362,6 @@ def eliminar_nomina(id):
     except Exception as e: return jsonify({'error': str(e)}), 400
     finally: cur.close(); conn.close()
 
-# ============================================
-# INICIALIZACIÓN
-# ============================================
 with app.app_context(): init_db()
 if __name__ == '__main__':
     port = int(os.getenv("PORT", 5000))
