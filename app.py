@@ -21,7 +21,7 @@ def init_db():
     if not conn: return
     cur = conn.cursor()
     
-    # Crear tablas si no existen
+    # Crear tablas
     cur.execute('''
         CREATE TABLE IF NOT EXISTS empleados (
             id_empleado SERIAL PRIMARY KEY, cedula TEXT UNIQUE NOT NULL, nombres TEXT NOT NULL, apellidos TEXT NOT NULL,
@@ -46,7 +46,7 @@ def init_db():
             descripcion TEXT
         )
     ''')
-    # 🆕 Añadir la columna 'descripcion' si la tabla ya existía
+    # Añadir la columna 'descripcion' si no existe
     cur.execute("ALTER TABLE nominas ADD COLUMN IF NOT EXISTS descripcion TEXT")
 
     cur.execute('''
@@ -68,23 +68,29 @@ def init_db():
     print("✅ Base de datos inicializada correctamente")
 
 # ============================================
-# MÓDULO EMPLEADOS
+# MÓDULO EMPLEADOS (CRUD + FILTROS) 🆕 AÑADIDO tipo_pago
 # ============================================
 @app.route('/api/empleados', methods=['GET'])
 def get_empleados():
     search = request.args.get('search', '')
     sucursal_id = request.args.get('sucursal_id', '')
+    tipo_pago = request.args.get('tipo_pago', '') # 🆕 Nuevo parámetro
+    
     conn = get_db_connection()
     if not conn: return jsonify([])
     cur = conn.cursor()
     query = "SELECT * FROM empleados WHERE activo = 1"
     params = []
+    
     if sucursal_id:
         query += " AND sucursal_id = %s"; params.append(sucursal_id)
+    if tipo_pago: # 🆕 Filtro por tipo de pago
+        query += " AND tipo_pago = %s"; params.append(tipo_pago)
     if search:
         query += " AND (cedula ILIKE %s OR nombres ILIKE %s OR apellidos ILIKE %s)"
         sp = f"%{search}%"; params.extend([sp, sp, sp])
     query += " ORDER BY nombres"
+    
     cur.execute(query, params)
     rows = cur.fetchall(); cur.close(); conn.close()
     return jsonify([{
@@ -159,13 +165,13 @@ def eliminar_sucursal(id):
     finally: cur.close(); conn.close()
 
 # ============================================
-# MÓDULO CALCULAR NÓMINA (Con descripción)
+# MÓDULO CALCULAR NÓMINA
 # ============================================
 @app.route('/api/calcular_nomina', methods=['POST'])
 def calcular_nomina():
     data = request.json
     tipo, fecha_inicio, fecha_fin = data.get('tipo'), data.get('fecha_inicio'), data.get('fecha_fin')
-    descripcion = data.get('descripcion', '') # 🆕 Recibir descripción
+    descripcion = data.get('descripcion', '')
     empleados_ids, faltas_dict, horas_extras_dict = data.get('empleados_ids', []), data.get('faltas', {}), data.get('horas_extras', {})
     if not fecha_inicio or not fecha_fin or not empleados_ids: return jsonify({'error': 'Faltan datos'}), 400
     conn = get_db_connection()
@@ -250,8 +256,7 @@ def get_historico_nominas():
         'fecha_calculo': r[13].isoformat(),
         'sso_usd': float(r[14]) if r[14] else 0, 'rpe_usd': float(r[15]) if r[15] else 0, 'faov_usd': float(r[16]) if r[16] else 0,
         'sso_bs': float(r[17]) if r[17] else 0, 'rpe_bs': float(r[18]) if r[18] else 0, 'faov_bs': float(r[19]) if r[19] else 0,
-        'descripcion': r[20], # 🆕 Leer descripción
-        'nombres': r[21], 'apellidos': r[22], 'cedula': r[23], 'sucursal_id': r[24], 'sucursal_nombre': r[25]
+        'descripcion': r[20], 'nombres': r[21], 'apellidos': r[22], 'cedula': r[23], 'sucursal_id': r[24], 'sucursal_nombre': r[25]
     } for r in rows])
 
 @app.route('/api/nominas/<int:id>', methods=['GET'])
