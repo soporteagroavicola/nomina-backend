@@ -1,13 +1,21 @@
 import os
 import psycopg2
-from flask import Flask, request, jsonify, session
+from flask import Flask, request, jsonify, session, send_file
 from flask_cors import CORS
 from datetime import datetime, timedelta
 from werkzeug.security import generate_password_hash, check_password_hash
+# 🆕 Importaciones para generar PDF
+from io import BytesIO
+from reportlab.pdfgen import canvas
+from reportlab.lib.pagesizes import A4, landscape
+from reportlab.lib.units import inch, mm
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
+from reportlab.lib import colors
 
 app = Flask(__name__)
 
-# Configuración de seguridad (CORREGIDA)
+# Configuración de seguridad
 app.config.update(
     SECRET_KEY=os.getenv('SECRET_KEY', 'clave_super_secreta_para_nomina_2026'),
     SESSION_COOKIE_HTTPONLY=True,
@@ -37,7 +45,7 @@ def init_db():
         conn = get_db_connection()
         if not conn: return
         cur = conn.cursor()
-        # Crear tablas
+        # Crear tablas (ya existentes)
         cur.execute('''
             CREATE TABLE IF NOT EXISTS empleados (
                 id_empleado SERIAL PRIMARY KEY, cedula TEXT UNIQUE NOT NULL, nombres TEXT NOT NULL, apellidos TEXT NOT NULL,
@@ -70,7 +78,6 @@ def init_db():
         ''')
         cur.execute("ALTER TABLE nominas ADD COLUMN IF NOT EXISTS descripcion TEXT")
         cur.execute("ALTER TABLE nominas ADD COLUMN IF NOT EXISTS lote_id INTEGER")
-        # 🆕 Crear tabla de usuarios
         cur.execute('''
             CREATE TABLE IF NOT EXISTS usuarios (
                 id SERIAL PRIMARY KEY, username TEXT UNIQUE NOT NULL, password TEXT NOT NULL
@@ -78,7 +85,6 @@ def init_db():
         ''')
         default_pass = generate_password_hash('admin123')
         cur.execute("INSERT INTO usuarios (username, password) VALUES (%s, %s) ON CONFLICT (username) DO NOTHING", ('admin', default_pass))
-        # Parámetros
         cur.execute('''
             CREATE TABLE IF NOT EXISTS parametros (
                 id SERIAL PRIMARY KEY, clave TEXT UNIQUE NOT NULL, valor REAL NOT NULL, fecha_actualizacion DATE
@@ -109,7 +115,7 @@ def login_required(f):
     return wrapper
 
 # ============================================
-# MÓDULO DE AUTENTICACIÓN Y USUARIOS (CORREGIDO)
+# MÓDULO DE AUTENTICACIÓN Y USUARIOS
 # ============================================
 @app.route('/api/login', methods=['POST'])
 def login():
@@ -157,8 +163,7 @@ def crear_usuario():
     data = request.json
     username = data.get('username')
     password = data.get('password')
-    if not username or not password:
-        return jsonify({'error': 'Usuario y contraseña son requeridos'}), 400
+    if not username or not password: return jsonify({'error': 'Usuario y contraseña son requeridos'}), 400
     conn = get_db_connection()
     if not conn: return jsonify({'error': 'Error de conexión'}), 500
     cur = conn.cursor()
@@ -168,7 +173,6 @@ def crear_usuario():
         conn.commit()
         return jsonify({'mensaje': f'Usuario "{username}" creado exitosamente'})
     except Exception as e:
-        # CORRECCIÓN: Verificamos si el error contiene el mensaje de duplicado de PostgreSQL
         if "duplicate key value violates unique constraint" in str(e):
             return jsonify({'error': 'El nombre de usuario ya existe'}), 400
         return jsonify({'error': str(e)}), 400
@@ -181,8 +185,7 @@ def cambiar_password():
     data = request.json
     old_password = data.get('old_password')
     new_password = data.get('new_password')
-    if not old_password or not new_password:
-        return jsonify({'error': 'La contraseña actual y la nueva son requeridas'}), 400
+    if not old_password or not new_password: return jsonify({'error': 'La contraseña actual y la nueva son requeridas'}), 400
     user_id = session.get('user_id')
     conn = get_db_connection()
     if not conn: return jsonify({'error': 'Error de conexión'}), 500
@@ -203,7 +206,7 @@ def cambiar_password():
         cur.close(); conn.close()
 
 # ============================================
-# ENDPOINTS DE NÓMINA (El resto sin cambios)
+# ENDPOINTS DE NÓMINA
 # ============================================
 @app.route('/api/empleados', methods=['GET'])
 @login_required
@@ -512,6 +515,132 @@ def eliminar_lote(id):
         conn.rollback()
         return jsonify({'error': str(e)}), 400
     finally: cur.close(); conn.close()
+
+# ============================================
+# 🆕 NUEVO ENDPOINT: GENERADOR DE RECIBO PDF
+# ============================================
+@app.route('/api/generar_recibo/<int:id_nomina>', methods=['GET'])
+@login_required
+def generar_recibo_pdf(id_nomina):
+    conn = get_db_connection()
+    if not conn: return jsonify({'error': 'Error de conexión'}), 500
+    cur = conn.cursor()
+    # Obtener datos de la nómina y el empleado
+    cur.execute('''
+        SELECT n.*, e.nombres, e.apellidos, e.cedula, e.cargo, e.salario_mensual_usd
+        FROM nominas n
+        JOIN empleados e ON n.id_empleado = e.id_empleado
+        WHERE n.id_nomina = %s
+    ''', (id_nomina,))
+    row = cur.fetchone()
+    cur.close(); conn.close()
+    if not row: return jsonify({'error': 'Nómina no encontrada'}), 404
+
+    # Desempaquetar datos
+    n = row
+    empleado_nombre = f"{n[22]} {n[23]}"
+    empleado_cedula = n[24]
+    cargo = n[25]
+    salario_mensual_usd = float(n[26]) if n[26] else 0
+    
+    fecha_inicio = n[2].strftime("%d/%m/%Y")
+    fecha_fin = n[3].strftime("%d/%m/%Y")
+    tipo = n[4]
+    salario_base = float(n[6]) if n[6] else 0
+    horas_extras = float(n[7]) if n[7] else 0
+    total_asignaciones = float(n[8]) if n[8] else 0
+    total_deducciones = float(n[9]) if n[9] else 0
+    neto_usd = float(n[10]) if n[10] else 0
+    neto_bs = float(n[11]) if n[11] else 0
+    sso_usd = float(n[14]) if n[14] else 0
+    rpe_usd = float(n[15]) if n[15] else 0
+    faov_usd = float(n[16]) if n[16] else 0
+    
+    tasa_bcv = float(n[12]) if n[12] else 0
+    descripcion = n[20] or "Recibo de Nómina"
+
+    # 1. Crear Buffer de PDF
+    buffer = BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=A4, leftMargin=20*mm, rightMargin=20*mm, topMargin=20*mm, bottomMargin=20*mm)
+    elements = []
+    styles = getSampleStyleSheet()
+    
+    # Estilos de texto
+    title_style = ParagraphStyle(name='Title', fontSize=16, alignment=1, spaceAfter=10)
+    bold_style = ParagraphStyle(name='Bold', fontSize=10, fontName='Helvetica-Bold')
+    normal_style = ParagraphStyle(name='Normal', fontSize=10, fontName='Helvetica')
+
+    # 2. Encabezado del Recibo
+    elements.append(Paragraph(f"<b>{descripcion}</b>", title_style))
+    
+    # Información del empleado (2 columnas)
+    header_data = [
+        ["Empleado:", f"{empleado_nombre}", "Cédula:", f"{empleado_cedula}"],
+        ["Cargo:", f"{cargo}", "Período:", f"{fecha_inicio} a {fecha_fin}"],
+        ["Salario Mensual:", f"${salario_mensual_usd:.2f}", "Tasa BCV:", f"Bs. {tasa_bcv:.4f}"],
+    ]
+    header_table = Table(header_data, colWidths=[80, 200, 80, 130])
+    header_table.setStyle(TableStyle([
+        ('FONTNAME', (0,0), (-1,-1), 'Helvetica-Bold'),
+        ('FONTNAME', (1,0), (1,-1), 'Helvetica'),
+        ('FONTNAME', (3,0), (3,-1), 'Helvetica'),
+        ('ALIGN', (0,0), (-1,-1), 'LEFT'),
+        ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
+        ('BOTTOMPADDING', (0,0), (-1,-1), 6),
+    ]))
+    elements.append(header_table)
+    elements.append(Spacer(1, 10*mm))
+
+    # 3. Tabla de Conceptos
+    concept_data = [
+        ["Cód.", "Concepto", "Días", "Monto (USD)"],
+        ["1000", "Salario Base del Período", f"{'11' if tipo == 'Quincenal' else '5'}", f"${salario_base:.2f}"],
+        ["1004", "Horas Extras", "-", f"${horas_extras:.2f}"],
+        ["---", "Total Asignaciones", "", f"<b>${total_asignaciones:.2f}</b>"],
+        ["4900", "Seguro Social Obligatorio (SSO)", "-", f"(${sso_usd:.2f})"],
+        ["4905", "Régimen Prestacional Empleo (RPE)", "-", f"(${rpe_usd:.2f})"],
+        ["4910", "Fondo Ahorro Oblig. (FAOV)", "-", f"(${faov_usd:.2f})"],
+        ["---", "Total Deducciones", "", f"<b>(${total_deducciones:.2f})</b>"],
+    ]
+    concept_table = Table(concept_data, colWidths=[50, 220, 60, 120])
+    concept_table.setStyle(TableStyle([
+        ('BACKGROUND', (0,0), (-1,0), colors.lightblue),
+        ('FONTNAME', (0,0), (-1,-1), 'Helvetica'),
+        ('FONTNAME', (3,0), (3,-1), 'Helvetica-Bold'), # Columna montos en negrita
+        ('ALIGN', (0,0), (0,-1), 'CENTER'),
+        ('ALIGN', (2,0), (2,-1), 'CENTER'),
+        ('ALIGN', (3,0), (3,-1), 'RIGHT'),
+        ('GRID', (0,0), (-1,-1), 0.5, colors.black),
+        ('BOTTOMPADDING', (0,0), (-1,-1), 8),
+        ('TOPPADDING', (0,0), (-1,-1), 8),
+    ]))
+    elements.append(concept_table)
+    elements.append(Spacer(1, 10*mm))
+
+    # 4. Totales Finales y Pie de Página
+    footer_data = [
+        ["<b>Líquido a Pagar (USD):</b>", f"<b>${neto_usd:.2f}</b>"],
+        ["<b>Líquido a Pagar (Bs):</b>", f"<b>Bs. {neto_bs:.2f}</b>"],
+        ["", ""],
+        ["Generado por:", "Sistema de Nómina Agroavícola del Llano"],
+        ["Fecha de Emisión:", datetime.now().strftime("%d/%m/%Y %H:%M")]
+    ]
+    footer_table = Table(footer_data, colWidths=[170, 280])
+    footer_table.setStyle(TableStyle([
+        ('FONTNAME', (0,0), (-1,-1), 'Helvetica'),
+        ('ALIGN', (0,0), (0,-1), 'LEFT'),
+        ('ALIGN', (1,0), (1,-1), 'RIGHT'),
+        ('BOTTOMPADDING', (0,0), (-1,-1), 5),
+        ('FONTNAME', (0,0), (1,1), 'Helvetica-Bold'),
+        ('FONTSIZE', (0,0), (1,1), 12),
+    ]))
+    elements.append(footer_table)
+
+    # Construir el PDF
+    doc.build(elements)
+    buffer.seek(0)
+    
+    return send_file(buffer, as_attachment=True, download_name=f"recibo_{id_nomina}.pdf", mimetype='application/pdf')
 
 with app.app_context(): init_db()
 if __name__ == '__main__':
