@@ -63,7 +63,6 @@ def init_db():
             id SERIAL PRIMARY KEY, clave TEXT UNIQUE NOT NULL, valor REAL NOT NULL, fecha_actualizacion DATE
         )
     ''')
-    # Inicializar parámetros por defecto si no existen
     cur.execute("SELECT * FROM parametros WHERE clave = 'tasa_bcv'")
     if not cur.fetchone(): cur.execute("INSERT INTO parametros (clave, valor) VALUES ('tasa_bcv', 755.1552)")
     cur.execute("SELECT * FROM parametros WHERE clave = 'cestaticket_usd'")
@@ -159,7 +158,7 @@ def eliminar_sucursal(id):
     finally: cur.close(); conn.close()
 
 # ============================================
-# MÓDULO PARÁMETROS (LEER Y ACTUALIZAR)
+# MÓDULO PARÁMETROS
 # ============================================
 @app.route('/api/parametros', methods=['GET'])
 def get_parametros():
@@ -170,7 +169,7 @@ def get_parametros():
     rows = cur.fetchall(); cur.close(); conn.close()
     return jsonify({row[0]: float(row[1]) for row in rows})
 
-@app.route('/api/parametros', methods=['PUT']) # 🆕 Nuevo endpoint para actualizar
+@app.route('/api/parametros', methods=['PUT'])
 def actualizar_parametro():
     data = request.json
     clave = data.get('clave')
@@ -190,7 +189,7 @@ def actualizar_parametro():
         cur.close(); conn.close()
 
 # ============================================
-# CÁLCULO DE NÓMINA Y LOTES
+# CÁLCULO DE NÓMINA Y LOTES (ACTUALIZADO: Control de Deducciones)
 # ============================================
 @app.route('/api/calcular_nomina', methods=['POST'])
 def calcular_nomina():
@@ -198,6 +197,9 @@ def calcular_nomina():
     tipo, fecha_inicio, fecha_fin = data.get('tipo'), data.get('fecha_inicio'), data.get('fecha_fin')
     descripcion = data.get('descripcion', '')
     empleados_ids, faltas_dict, horas_extras_dict = data.get('empleados_ids', []), data.get('faltas', {}), data.get('horas_extras', {})
+    # 🆕 Recibir el estado del interruptor
+    aplicar_deducciones = data.get('aplicar_deducciones', True) 
+    
     if not fecha_inicio or not fecha_fin or not empleados_ids: return jsonify({'error': 'Faltan datos'}), 400
     conn = get_db_connection()
     if not conn: return jsonify({'error': 'Error de conexión'}), 500
@@ -239,8 +241,18 @@ def calcular_nomina():
             dias_semana_trabajados = max(0, 5 - faltas)
             total_asignaciones = (salario_diario * dias_semana_trabajados) + total_horas_extras
 
-        ivss, rpe, faov = total_asignaciones * 0.04, total_asignaciones * 0.005, total_asignaciones * 0.01
-        total_deducciones = ivss + rpe + faov
+        # 🔽 Lógica condicional de deducciones
+        if aplicar_deducciones:
+            ivss = total_asignaciones * 0.04
+            rpe = total_asignaciones * 0.005
+            faov = total_asignaciones * 0.01
+            total_deducciones = ivss + rpe + faov
+        else:
+            ivss = 0.0
+            rpe = 0.0
+            faov = 0.0
+            total_deducciones = 0.0
+        
         neto_usd = total_asignaciones - total_deducciones
         neto_bs = neto_usd * tasa_bcv
         
