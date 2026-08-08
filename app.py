@@ -20,6 +20,7 @@ def init_db():
     conn = get_db_connection()
     if not conn: return
     cur = conn.cursor()
+    # Tabla Empleados
     cur.execute('''
         CREATE TABLE IF NOT EXISTS empleados (
             id_empleado SERIAL PRIMARY KEY, cedula TEXT UNIQUE NOT NULL, nombres TEXT NOT NULL, apellidos TEXT NOT NULL,
@@ -28,11 +29,24 @@ def init_db():
             email TEXT, telefono TEXT, direccion TEXT, cuenta_bancaria TEXT
         )
     ''')
+    # Tabla Sucursales
     cur.execute('''
         CREATE TABLE IF NOT EXISTS sucursales (
             id_sucursal SERIAL PRIMARY KEY, nombre TEXT UNIQUE NOT NULL, activo INTEGER DEFAULT 1
         )
     ''')
+    # 🆕 Tabla Lotes de Nómina (Para agrupar y tener el total general)
+    cur.execute('''
+        CREATE TABLE IF NOT EXISTS lotes_nomina (
+            id_lote SERIAL PRIMARY KEY, 
+            descripcion TEXT, 
+            fecha_calculo DATE NOT NULL, 
+            total_usd REAL DEFAULT 0, 
+            total_bs REAL DEFAULT 0,
+            cantidad_empleados INTEGER DEFAULT 0
+        )
+    ''')
+    # Tabla Nóminas (Agregamos el campo lote_id)
     cur.execute('''
         CREATE TABLE IF NOT EXISTS nominas (
             id_nomina SERIAL PRIMARY KEY, id_empleado INTEGER NOT NULL, fecha_inicio DATE NOT NULL, fecha_fin DATE NOT NULL,
@@ -41,10 +55,13 @@ def init_db():
             neto_pagar_usd REAL, neto_pagar_bs REAL, tasa_bcv REAL, fecha_calculo DATE,
             sso_usd REAL DEFAULT 0, rpe_usd REAL DEFAULT 0, faov_usd REAL DEFAULT 0,
             sso_bs REAL DEFAULT 0, rpe_bs REAL DEFAULT 0, faov_bs REAL DEFAULT 0,
-            descripcion TEXT
+            descripcion TEXT,
+            lote_id INTEGER
         )
     ''')
     cur.execute("ALTER TABLE nominas ADD COLUMN IF NOT EXISTS descripcion TEXT")
+    cur.execute("ALTER TABLE nominas ADD COLUMN IF NOT EXISTS lote_id INTEGER") # 🆕 Añadir columna lote_id si no existe
+    
     cur.execute('''
         CREATE TABLE IF NOT EXISTS parametros (
             id SERIAL PRIMARY KEY, clave TEXT UNIQUE NOT NULL, valor REAL NOT NULL, fecha_actualizacion DATE
@@ -64,7 +81,7 @@ def init_db():
     print("✅ Base de datos inicializada correctamente")
 
 # ============================================
-# MÓDULO EMPLEADOS
+# MÓDULO EMPLEADOS Y SUCURSALES
 # ============================================
 @app.route('/api/empleados', methods=['GET'])
 def get_empleados():
@@ -96,10 +113,7 @@ def crear_empleado():
     if not conn: return jsonify({'error': 'Error de conexión'}), 500
     cur = conn.cursor()
     try:
-        cur.execute('''
-            INSERT INTO empleados (cedula, nombres, apellidos, fecha_nacimiento, fecha_ingreso, cargo, departamento, sucursal_id, salario_mensual_usd, tipo_pago, email, telefono, direccion, cuenta_bancaria)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-        ''', (data['cedula'], data['nombres'], data['apellidos'], data['fecha_nacimiento'], data['fecha_ingreso'], data['cargo'], data['departamento'], data['sucursal_id'], data['salario_mensual_usd'], data['tipo_pago'], data.get('email'), data.get('telefono'), data.get('direccion'), data.get('cuenta_bancaria')))
+        cur.execute('''INSERT INTO empleados (cedula, nombres, apellidos, fecha_nacimiento, fecha_ingreso, cargo, departamento, sucursal_id, salario_mensual_usd, tipo_pago, email, telefono, direccion, cuenta_bancaria) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)''', (data['cedula'], data['nombres'], data['apellidos'], data['fecha_nacimiento'], data['fecha_ingreso'], data['cargo'], data['departamento'], data['sucursal_id'], data['salario_mensual_usd'], data['tipo_pago'], data.get('email'), data.get('telefono'), data.get('direccion'), data.get('cuenta_bancaria')))
         conn.commit(); return jsonify({'mensaje': 'Empleado creado exitosamente'})
     except Exception as e: return jsonify({'error': str(e)}), 400
     finally: cur.close(); conn.close()
@@ -115,9 +129,6 @@ def eliminar_empleado(id):
     except Exception as e: return jsonify({'error': str(e)}), 400
     finally: cur.close(); conn.close()
 
-# ============================================
-# MÓDULO SUCURSALES
-# ============================================
 @app.route('/api/sucursales', methods=['GET'])
 def get_sucursales():
     conn = get_db_connection()
@@ -151,7 +162,7 @@ def eliminar_sucursal(id):
     finally: cur.close(); conn.close()
 
 # ============================================
-# MÓDULO CALCULAR NÓMINA (CALENDARIO DINÁMICO)
+# 🆕 MÓDULO CALCULAR NÓMINA (NUEVO: CREACIÓN DE LOTES Y TOTALES)
 # ============================================
 @app.route('/api/calcular_nomina', methods=['POST'])
 def calcular_nomina():
@@ -168,16 +179,19 @@ def calcular_nomina():
     placeholders = ','.join(['%s'] * len(empleados_ids))
     cur.execute(f"SELECT * FROM empleados WHERE id_empleado IN ({placeholders})", empleados_ids)
     empleados = cur.fetchall()
-    resultados = []
     
-    # 🔽 Cálculo dinámico del calendario basado en las fechas seleccionadas
+    # 🔽 1. Calcular todos los resultados y sumar los totales para el Lote
+    resultados = []
+    total_usd_lote = 0.0
+    total_bs_lote = 0.0
+    
     start_date = datetime.strptime(fecha_inicio, "%Y-%m-%d").date()
     end_date = datetime.strptime(fecha_fin, "%Y-%m-%d").date()
     total_calendar_days = (end_date - start_date).days + 1
     rest_days = 0
     current_day = start_date
     while current_day <= end_date:
-        if current_day.weekday() >= 5: # 5 = Sábado, 6 = Domingo
+        if current_day.weekday() >= 5:
             rest_days += 1
         current_day += timedelta(days=1)
     working_days = total_calendar_days - rest_days
@@ -194,81 +208,122 @@ def calcular_nomina():
         if tipo == 'Quincenal':
             salario_base = salario_mensual / 2
             total_asignaciones = salario_base - (faltas * salario_diario) + total_horas_extras
-        else: # Semanal
+        else:
             dias_semana_trabajados = max(0, 5 - faltas)
             total_asignaciones = (salario_diario * dias_semana_trabajados) + total_horas_extras
 
         ivss, rpe, faov = total_asignaciones * 0.04, total_asignaciones * 0.005, total_asignaciones * 0.01
         total_deducciones = ivss + rpe + faov
         neto_usd = total_asignaciones - total_deducciones
+        neto_bs = neto_usd * tasa_bcv
+        
+        total_usd_lote += neto_usd
+        total_bs_lote += neto_bs
         
         calculo = {
             'salario_base_usd': salario_base if tipo == 'Quincenal' else salario_diario * dias_semana_trabajados,
             'horas_extras_usd': total_horas_extras, 'total_asignaciones_usd': total_asignaciones,
             'total_deducciones_usd': total_deducciones, 'sso_usd': ivss, 'rpe_usd': rpe, 'faov_usd': faov,
-            'neto_pagar_usd': neto_usd, 'neto_pagar_bs': neto_usd * tasa_bcv, 'faltas_dias': faltas,
+            'neto_pagar_usd': neto_usd, 'neto_pagar_bs': neto_bs, 'faltas_dias': faltas,
             'dias_totales_periodo': total_calendar_days, 'dias_descanso': rest_days, 'dias_reales_trabajados': working_days,
             'empleado': {'id': emp[0], 'cedula': cedula, 'nombre_completo': f"{emp[2]} {emp[3]}"}
         }
         resultados.append(calculo)
-        
+
+    # 🔽 2. Guardar el LOTE en la base de datos
+    cur.execute('''
+        INSERT INTO lotes_nomina (descripcion, fecha_calculo, total_usd, total_bs, cantidad_empleados)
+        VALUES (%s, %s, %s, %s, %s)
+        RETURNING id_lote
+    ''', (descripcion, datetime.now().date(), total_usd_lote, total_bs_lote, len(empleados)))
+    lote_id = cur.fetchone()[0]
+
+    # 🔽 3. Guardar los detalles (Nóminas) con el id_lote y el total del lote
+    for emp, calculo in zip(empleados, resultados):
         cur.execute('''
             INSERT INTO nominas (
                 id_empleado, fecha_inicio, fecha_fin, tipo, faltas_dias, salario_base_usd, horas_extras_usd,
                 total_asignaciones_usd, total_deducciones_usd, neto_pagar_usd, neto_pagar_bs, tasa_bcv, fecha_calculo,
-                sso_usd, rpe_usd, faov_usd, sso_bs, rpe_bs, faov_bs, descripcion
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-        ''', (emp[0], fecha_inicio, fecha_fin, tipo, calculo['faltas_dias'], calculo['salario_base_usd'], calculo['horas_extras_usd'], calculo['total_asignaciones_usd'], calculo['total_deducciones_usd'], calculo['neto_pagar_usd'], calculo['neto_pagar_bs'], tasa_bcv, datetime.now().date(), calculo['sso_usd'], calculo['rpe_usd'], calculo['faov_usd'], calculo['sso_usd'] * tasa_bcv, calculo['rpe_usd'] * tasa_bcv, calculo['faov_usd'] * tasa_bcv, descripcion))
+                sso_usd, rpe_usd, faov_usd, sso_bs, rpe_bs, faov_bs, descripcion, lote_id
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        ''', (emp[0], fecha_inicio, fecha_fin, tipo, calculo['faltas_dias'], calculo['salario_base_usd'], calculo['horas_extras_usd'], calculo['total_asignaciones_usd'], calculo['total_deducciones_usd'], calculo['neto_pagar_usd'], calculo['neto_pagar_bs'], tasa_bcv, datetime.now().date(), calculo['sso_usd'], calculo['rpe_usd'], calculo['faov_usd'], calculo['sso_usd'] * tasa_bcv, calculo['rpe_usd'] * tasa_bcv, calculo['faov_usd'] * tasa_bcv, descripcion, lote_id))
         
     conn.commit(); cur.close(); conn.close()
-    return jsonify({'tasa_bcv': tasa_bcv, 'resultados': resultados})
+    return jsonify({'tasa_bcv': tasa_bcv, 'resultados': resultados, 'lote_id': lote_id})
 
 # ============================================
-# MÓDULO HISTORIAL DE NÓMINAS
+# 🆕 MÓDULO CONSULTA DE LOTES (Historial agrupado)
 # ============================================
-@app.route('/api/nominas', methods=['GET'])
-def get_historico_nominas():
+@app.route('/api/lotes', methods=['GET'])
+def get_lotes():
     search = request.args.get('search', '')
-    sucursal_id = request.args.get('sucursal_id', '')
     conn = get_db_connection()
     if not conn: return jsonify([])
     cur = conn.cursor()
     query = '''
-        SELECT n.*, e.nombres, e.apellidos, e.cedula, s.id_sucursal, s.nombre as sucursal_nombre
-        FROM nominas n
-        JOIN empleados e ON n.id_empleado = e.id_empleado
+        SELECT l.*, 
+               COUNT(n.id_nomina) as total_empleados_detalle,
+               STRING_AGG(DISTINCT s.nombre, ', ') as sucursales_involucradas
+        FROM lotes_nomina l
+        LEFT JOIN nominas n ON l.id_lote = n.lote_id
+        LEFT JOIN empleados e ON n.id_empleado = e.id_empleado
         LEFT JOIN sucursales s ON e.sucursal_id = s.id_sucursal
         WHERE 1=1
     '''
     params = []
-    if sucursal_id: query += " AND s.id_sucursal = %s"; params.append(sucursal_id)
-    if search: query += " AND (e.cedula ILIKE %s OR e.nombres ILIKE %s OR e.apellidos ILIKE %s)"; sp = f"%{search}%"; params.extend([sp, sp, sp])
-    query += " ORDER BY n.fecha_calculo DESC, n.id_nomina DESC"
+    if search:
+        query += " AND (l.descripcion ILIKE %s OR CAST(l.id_lote AS TEXT) ILIKE %s)"
+        sp = f"%{search}%"
+        params.extend([sp, sp])
+    query += " GROUP BY l.id_lote ORDER BY l.fecha_calculo DESC, l.id_lote DESC"
     cur.execute(query, params)
     rows = cur.fetchall(); cur.close(); conn.close()
     return jsonify([{
-        'id_nomina': r[0], 'id_empleado': r[1], 'fecha_inicio': r[2].isoformat(), 'fecha_fin': r[3].isoformat(),
-        'tipo': r[4], 'faltas_dias': r[5], 'salario_base_usd': float(r[6]) if r[6] else 0,
-        'horas_extras_usd': float(r[7]) if r[7] else 0, 'total_asignaciones_usd': float(r[8]) if r[8] else 0,
-        'total_deducciones_usd': float(r[9]) if r[9] else 0, 'neto_pagar_usd': float(r[10]) if r[10] else 0,
-        'neto_pagar_bs': float(r[11]) if r[11] else 0, 'tasa_bcv': float(r[12]) if r[12] else 0,
-        'fecha_calculo': r[13].isoformat(),
-        'sso_usd': float(r[14]) if r[14] else 0, 'rpe_usd': float(r[15]) if r[15] else 0, 'faov_usd': float(r[16]) if r[16] else 0,
-        'sso_bs': float(r[17]) if r[17] else 0, 'rpe_bs': float(r[18]) if r[18] else 0, 'faov_bs': float(r[19]) if r[19] else 0,
-        'descripcion': r[20], 'nombres': r[21], 'apellidos': r[22], 'cedula': r[23], 'sucursal_id': r[24], 'sucursal_nombre': r[25]
+        'id_lote': r[0], 'descripcion': r[1], 'fecha_calculo': r[2].isoformat(), 'total_usd': float(r[3]) if r[3] else 0,
+        'total_bs': float(r[4]) if r[4] else 0, 'cantidad_empleados_lote': r[5],
+        'total_empleados_detalle': r[6], 'sucursales_involucradas': r[7] or 'Mixto / Sin Sucursal'
     } for r in rows])
 
-@app.route('/api/nominas/<int:id>', methods=['DELETE'])
-def eliminar_nomina(id):
+@app.route('/api/lotes/<int:id>', methods=['GET'])
+def get_lote_detalle(id):
     conn = get_db_connection()
-    if not conn: return jsonify({'error': 'Error de conexión'}), 500
+    if not conn: return jsonify([])
     cur = conn.cursor()
-    try:
-        cur.execute("DELETE FROM nominas WHERE id_nomina = %s", (id,))
-        conn.commit()
-        return jsonify({'mensaje': 'Nómina eliminada exitosamente'})
-    except Exception as e: return jsonify({'error': str(e)}), 400
-    finally: cur.close(); conn.close()
+    # Obtener datos del lote
+    cur.execute("SELECT * FROM lotes_nomina WHERE id_lote = %s", (id,))
+    lote_row = cur.fetchone()
+    if not lote_row: return jsonify({'error': 'Lote no encontrado'}), 404
+    
+    # Obtener las nóminas de ese lote
+    cur.execute('''
+        SELECT n.*, e.nombres, e.apellidos, e.cedula, s.id_sucursal, s.nombre as sucursal_nombre
+        FROM nominas n
+        JOIN empleados e ON n.id_empleado = e.id_empleado
+        LEFT JOIN sucursales s ON e.sucursal_id = s.id_sucursal
+        WHERE n.lote_id = %s
+        ORDER BY e.nombres
+    ''', (id,))
+    nominas_rows = cur.fetchall(); cur.close(); conn.close()
+    nominas = []
+    for n in nominas_rows:
+        nominas.append({
+            'id_nomina': n[0], 'id_empleado': n[1], 'fecha_inicio': n[2].isoformat(), 'fecha_fin': n[3].isoformat(),
+            'tipo': n[4], 'faltas_dias': n[5], 'salario_base_usd': float(n[6]) if n[6] else 0,
+            'horas_extras_usd': float(n[7]) if n[7] else 0, 'total_asignaciones_usd': float(n[8]) if n[8] else 0,
+            'total_deducciones_usd': float(n[9]) if n[9] else 0, 'neto_pagar_usd': float(n[10]) if n[10] else 0,
+            'neto_pagar_bs': float(n[11]) if n[11] else 0, 'tasa_bcv': float(n[12]) if n[12] else 0,
+            'fecha_calculo': n[13].isoformat(),
+            'sso_usd': float(n[14]) if n[14] else 0, 'rpe_usd': float(n[15]) if n[15] else 0, 'faov_usd': float(n[16]) if n[16] else 0,
+            'sso_bs': float(n[17]) if n[17] else 0, 'rpe_bs': float(n[18]) if n[18] else 0, 'faov_bs': float(n[19]) if n[19] else 0,
+            'descripcion': n[20], 'lote_id': n[21],
+            'nombres': n[22], 'apellidos': n[23], 'cedula': n[24], 'sucursal_id': n[25], 'sucursal_nombre': n[26] or 'Sin sucursal'
+        })
+    return jsonify({
+        'id_lote': lote_row[0], 'descripcion': lote_row[1], 'fecha_calculo': lote_row[2].isoformat(),
+        'total_usd': float(lote_row[3]) if lote_row[3] else 0, 'total_bs': float(lote_row[4]) if lote_row[4] else 0,
+        'cantidad_empleados_lote': lote_row[5],
+        'nominas': nominas
+    })
 
 with app.app_context(): init_db()
 if __name__ == '__main__':
