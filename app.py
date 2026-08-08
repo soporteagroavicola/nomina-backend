@@ -63,6 +63,7 @@ def init_db():
             id SERIAL PRIMARY KEY, clave TEXT UNIQUE NOT NULL, valor REAL NOT NULL, fecha_actualizacion DATE
         )
     ''')
+    # Inicializar parámetros por defecto si no existen
     cur.execute("SELECT * FROM parametros WHERE clave = 'tasa_bcv'")
     if not cur.fetchone(): cur.execute("INSERT INTO parametros (clave, valor) VALUES ('tasa_bcv', 755.1552)")
     cur.execute("SELECT * FROM parametros WHERE clave = 'cestaticket_usd'")
@@ -158,12 +159,43 @@ def eliminar_sucursal(id):
     finally: cur.close(); conn.close()
 
 # ============================================
+# MÓDULO PARÁMETROS (LEER Y ACTUALIZAR)
+# ============================================
+@app.route('/api/parametros', methods=['GET'])
+def get_parametros():
+    conn = get_db_connection()
+    if not conn: return jsonify({})
+    cur = conn.cursor()
+    cur.execute("SELECT clave, valor FROM parametros")
+    rows = cur.fetchall(); cur.close(); conn.close()
+    return jsonify({row[0]: float(row[1]) for row in rows})
+
+@app.route('/api/parametros', methods=['PUT']) # 🆕 Nuevo endpoint para actualizar
+def actualizar_parametro():
+    data = request.json
+    clave = data.get('clave')
+    valor = data.get('valor')
+    if not clave or valor is None:
+        return jsonify({'error': 'Clave y valor son requeridos'}), 400
+    conn = get_db_connection()
+    if not conn: return jsonify({'error': 'Error de conexión'}), 500
+    cur = conn.cursor()
+    try:
+        cur.execute("UPDATE parametros SET valor = %s, fecha_actualizacion = CURRENT_DATE WHERE clave = %s", (valor, clave))
+        conn.commit()
+        return jsonify({'mensaje': f'Parámetro "{clave}" actualizado exitosamente'})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 400
+    finally:
+        cur.close(); conn.close()
+
+# ============================================
 # CÁLCULO DE NÓMINA Y LOTES
 # ============================================
 @app.route('/api/calcular_nomina', methods=['POST'])
 def calcular_nomina():
     data = request.json
-    tipo, fecha_inicio, fecha_fin = data.get('tipo'), data.get('fecha_inicio'), data.get(' fecha_fin')
+    tipo, fecha_inicio, fecha_fin = data.get('tipo'), data.get('fecha_inicio'), data.get('fecha_fin')
     descripcion = data.get('descripcion', '')
     empleados_ids, faltas_dict, horas_extras_dict = data.get('empleados_ids', []), data.get('faltas', {}), data.get('horas_extras', {})
     if not fecha_inicio or not fecha_fin or not empleados_ids: return jsonify({'error': 'Faltan datos'}), 400
@@ -316,21 +348,18 @@ def get_lote_detalle(id):
         'nominas': nominas
     })
 
-# 🆕 NUEVO ENDPOINT: Borrar un Lote completo y sus nóminas asociadas
 @app.route('/api/lotes/<int:id>', methods=['DELETE'])
 def eliminar_lote(id):
     conn = get_db_connection()
     if not conn: return jsonify({'error': 'Error de conexión'}), 500
     cur = conn.cursor()
     try:
-        # 1. Eliminar todas las nóminas vinculadas a este lote
         cur.execute("DELETE FROM nominas WHERE lote_id = %s", (id,))
-        # 2. Eliminar el lote
         cur.execute("DELETE FROM lotes_nomina WHERE id_lote = %s", (id,))
         conn.commit()
         return jsonify({'mensaje': 'Lote de nómina y todos sus registros eliminados exitosamente'})
     except Exception as e:
-        conn.rollback() # Si falla, deshacemos todo
+        conn.rollback()
         return jsonify({'error': str(e)}), 400
     finally:
         cur.close(); conn.close()
