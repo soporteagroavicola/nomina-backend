@@ -189,7 +189,7 @@ def actualizar_parametro():
         cur.close(); conn.close()
 
 # ============================================
-# CÁLCULO DE NÓMINA Y LOTES (ACTUALIZADO: Control de Deducciones)
+# CÁLCULO DE NÓMINA (CORREGIDO: CÁLCULO SEMANAL ROBUSTO)
 # ============================================
 @app.route('/api/calcular_nomina', methods=['POST'])
 def calcular_nomina():
@@ -197,7 +197,6 @@ def calcular_nomina():
     tipo, fecha_inicio, fecha_fin = data.get('tipo'), data.get('fecha_inicio'), data.get('fecha_fin')
     descripcion = data.get('descripcion', '')
     empleados_ids, faltas_dict, horas_extras_dict = data.get('empleados_ids', []), data.get('faltas', {}), data.get('horas_extras', {})
-    # 🆕 Recibir el estado del interruptor
     aplicar_deducciones = data.get('aplicar_deducciones', True) 
     
     if not fecha_inicio or not fecha_fin or not empleados_ids: return jsonify({'error': 'Faltan datos'}), 400
@@ -214,16 +213,10 @@ def calcular_nomina():
     total_usd_lote = 0.0
     total_bs_lote = 0.0
     
+    # Cálculo del calendario (días totales del período seleccionado)
     start_date = datetime.strptime(fecha_inicio, "%Y-%m-%d").date()
     end_date = datetime.strptime(fecha_fin, "%Y-%m-%d").date()
     total_calendar_days = (end_date - start_date).days + 1
-    rest_days = 0
-    current_day = start_date
-    while current_day <= end_date:
-        if current_day.weekday() >= 5:
-            rest_days += 1
-        current_day += timedelta(days=1)
-    working_days = total_calendar_days - rest_days
     
     for emp in empleados:
         cedula = emp[1]
@@ -234,24 +227,30 @@ def calcular_nomina():
         salario_diario = salario_mensual / 30
         total_horas_extras = horas * valor_hora
         
+        # 🔽 Lógica profesional corregida (Días trabajados fijos según el tipo)
         if tipo == 'Quincenal':
+            # 15 días naturales: 4 de descanso (sábados y domingos), 11 días trabajados teóricos
+            dias_teoricos_trabajo = 11
+            dias_descanso = 4
             salario_base = salario_mensual / 2
+            dias_reales_trabajados = max(0, dias_teoricos_trabajo - faltas)
             total_asignaciones = salario_base - (faltas * salario_diario) + total_horas_extras
-        else:
-            dias_semana_trabajados = max(0, 5 - faltas)
-            total_asignaciones = (salario_diario * dias_semana_trabajados) + total_horas_extras
+        else: # Semanal
+            # 7 días naturales: 2 de descanso (sábado y domingo), 5 días trabajados teóricos
+            dias_teoricos_trabajo = 5
+            dias_descanso = 2
+            salario_base = salario_diario * dias_teoricos_trabajo  # Base fija de 5 días
+            dias_reales_trabajados = max(0, dias_teoricos_trabajo - faltas)
+            total_asignaciones = salario_base - (faltas * salario_diario) + total_horas_extras
 
-        # 🔽 Lógica condicional de deducciones
+        # Aplicar o no deducciones
         if aplicar_deducciones:
             ivss = total_asignaciones * 0.04
             rpe = total_asignaciones * 0.005
             faov = total_asignaciones * 0.01
             total_deducciones = ivss + rpe + faov
         else:
-            ivss = 0.0
-            rpe = 0.0
-            faov = 0.0
-            total_deducciones = 0.0
+            ivss, rpe, faov, total_deducciones = 0.0, 0.0, 0.0, 0.0
         
         neto_usd = total_asignaciones - total_deducciones
         neto_bs = neto_usd * tasa_bcv
@@ -260,11 +259,17 @@ def calcular_nomina():
         total_bs_lote += neto_bs
         
         calculo = {
-            'salario_base_usd': salario_base if tipo == 'Quincenal' else salario_diario * dias_semana_trabajados,
-            'horas_extras_usd': total_horas_extras, 'total_asignaciones_usd': total_asignaciones,
-            'total_deducciones_usd': total_deducciones, 'sso_usd': ivss, 'rpe_usd': rpe, 'faov_usd': faov,
-            'neto_pagar_usd': neto_usd, 'neto_pagar_bs': neto_bs, 'faltas_dias': faltas,
-            'dias_totales_periodo': total_calendar_days, 'dias_descanso': rest_days, 'dias_reales_trabajados': working_days,
+            'salario_base_usd': salario_base,
+            'horas_extras_usd': total_horas_extras,
+            'total_asignaciones_usd': total_asignaciones,
+            'total_deducciones_usd': total_deducciones,
+            'sso_usd': ivss, 'rpe_usd': rpe, 'faov_usd': faov,
+            'neto_pagar_usd': neto_usd,
+            'neto_pagar_bs': neto_bs,
+            'faltas_dias': faltas,
+            'dias_totales_periodo': total_calendar_days,
+            'dias_descanso': dias_descanso,
+            'dias_reales_trabajados': dias_reales_trabajados,
             'empleado': {'id': emp[0], 'cedula': cedula, 'nombre_completo': f"{emp[2]} {emp[3]}"}
         }
         resultados.append(calculo)
