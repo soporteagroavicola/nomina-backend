@@ -6,10 +6,24 @@ from datetime import datetime, timedelta
 from werkzeug.security import generate_password_hash, check_password_hash
 
 app = Flask(__name__)
-# Clave secreta para encriptar las sesiones (se recomienda cambiarla en producción)
-app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', 'clave_super_secreta_para_nomina_2026')
-# Permitir cookies de sesión entre Frontend y Backend (CORS)
-CORS(app, supports_credentials=True)
+
+# 🔽 CONFIGURACIÓN DE SEGURIDAD DE SESIÓN (SOLUCIÓN AL PROBLEMA DE LOGOUT)
+app.config.update(
+    SECRET_KEY=os.getenv('SECRET_KEY', 'clave_super_secreta_para_nomina_2026'),
+    SESSION_COOKIE_HTTPONLY=True,
+    SESSION_COOKIE_SAMESITE='None',      # ⚠️ CRÍTICO: Permite que el navegador envíe la cookie desde el frontend
+    SESSION_COOKIE_SECURE=True,          # ⚠️ CRÍTICO: Solo se envía por HTTPS (Render usa HTTPS)
+    PERMANENT_SESSION_LIFETIME=timedelta(hours=8) # La sesión dura 8 horas continuas
+)
+
+# 🔽 CONFIGURACIÓN CORS EXPLÍCITA Y SEGURA
+# Agrega aquí los dominios exactos de tu frontend local y el de Render
+frontend_urls = [
+    "https://nomina-frontend.onrender.com",
+    "http://localhost:5000",
+    "http://127.0.0.1:5000"
+]
+CORS(app, origins=frontend_urls, supports_credentials=True)
 
 def get_db_connection():
     database_url = 'postgresql://nomina_db_naiu_user:58sgnjVGnVRtLVbOVqYiA7d41VXwsHUH@dpg-d9prbrr9ik0c73ci4e0g-a.oregon-postgres.render.com/nomina_db_naiu'
@@ -24,7 +38,7 @@ def init_db():
     conn = get_db_connection()
     if not conn: return
     cur = conn.cursor()
-    # Crear las tablas existentes...
+    # Crear tablas y admin (código idéntico al anterior)
     cur.execute('''
         CREATE TABLE IF NOT EXISTS empleados (
             id_empleado SERIAL PRIMARY KEY, cedula TEXT UNIQUE NOT NULL, nombres TEXT NOT NULL, apellidos TEXT NOT NULL,
@@ -62,14 +76,11 @@ def init_db():
             id SERIAL PRIMARY KEY, clave TEXT UNIQUE NOT NULL, valor REAL NOT NULL, fecha_actualizacion DATE
         )
     ''')
-    # 🆕 CREAR TABLA DE USUARIOS (LOGIN)
     cur.execute('''
         CREATE TABLE IF NOT EXISTS usuarios (
             id SERIAL PRIMARY KEY, username TEXT UNIQUE NOT NULL, password TEXT NOT NULL
         )
     ''')
-    # Insertar usuario administrador por defecto si no existe (admin / admin123)
-    # La contraseña se guarda hasheada (encriptada) por seguridad
     default_pass = generate_password_hash('admin123')
     cur.execute("INSERT INTO usuarios (username, password) VALUES (%s, %s) ON CONFLICT (username) DO NOTHING", ('admin', default_pass))
 
@@ -84,17 +95,16 @@ def init_db():
     cur.execute("SELECT * FROM parametros WHERE clave = 'porcentaje_faov'")
     if not cur.fetchone(): cur.execute("INSERT INTO parametros (clave, valor) VALUES ('porcentaje_faov', 0.01)")
     conn.commit(); cur.close(); conn.close()
-    print("✅ Base de datos inicializada correctamente (Usuario admin creado)")
+    print("✅ Base de datos inicializada correctamente")
 
 # ============================================
-# 🆕 MÓDULO DE AUTENTICACIÓN (LOGIN / LOGOUT / CHECK)
+# MÓDULO DE AUTENTICACIÓN (LOGIN / LOGOUT / CHECK)
 # ============================================
 @app.route('/api/login', methods=['POST'])
 def login():
     data = request.json
     username = data.get('username')
     password = data.get('password')
-    
     conn = get_db_connection()
     if not conn: return jsonify({'error': 'Error de conexión'}), 500
     cur = conn.cursor()
@@ -105,6 +115,7 @@ def login():
     if user and check_password_hash(user[1], password):
         session['user_id'] = user[0]
         session['username'] = username
+        session.permanent = True # 🛠️ Marcar la sesión como permanente (dará 8 horas)
         return jsonify({'mensaje': 'Inicio de sesión exitoso', 'username': username})
     return jsonify({'error': 'Usuario o contraseña incorrectos'}), 401
 
@@ -119,7 +130,6 @@ def check_auth():
         return jsonify({'authenticated': True, 'username': session.get('username')})
     return jsonify({'authenticated': False}), 401
 
-# Decorador para proteger las rutas
 def login_required(f):
     def wrapper(*args, **kwargs):
         if 'user_id' not in session:
@@ -129,12 +139,11 @@ def login_required(f):
     return wrapper
 
 # ============================================
-# ENDPOINTS CRUD (TODOS PROTEGIDOS CON login_required)
+# ENDPOINTS (EL RESTO DE RUTAS CON @login_required)
 # ============================================
 @app.route('/api/empleados', methods=['GET'])
 @login_required
 def get_empleados():
-    # ... (El resto del contenido del endpoint get_empleados sin cambios)
     search = request.args.get('search', '')
     sucursal_id = request.args.get('sucursal_id', '')
     tipo_pago = request.args.get('tipo_pago', '')
