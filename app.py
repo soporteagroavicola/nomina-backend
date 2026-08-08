@@ -7,7 +7,7 @@ from werkzeug.security import generate_password_hash, check_password_hash
 
 app = Flask(__name__)
 
-# Configuración de seguridad
+# Configuración de seguridad (CORREGIDA)
 app.config.update(
     SECRET_KEY=os.getenv('SECRET_KEY', 'clave_super_secreta_para_nomina_2026'),
     SESSION_COOKIE_HTTPONLY=True,
@@ -16,7 +16,6 @@ app.config.update(
     PERMANENT_SESSION_LIFETIME=timedelta(hours=8)
 )
 
-# CORS
 frontend_urls = [
     "https://nomina-frontend.onrender.com",
     "http://localhost:5000",
@@ -34,71 +33,83 @@ def get_db_connection():
         return None
 
 def init_db():
-    conn = get_db_connection()
-    if not conn: return
-    cur = conn.cursor()
-    # Crear tablas base
-    cur.execute('''
-        CREATE TABLE IF NOT EXISTS empleados (
-            id_empleado SERIAL PRIMARY KEY, cedula TEXT UNIQUE NOT NULL, nombres TEXT NOT NULL, apellidos TEXT NOT NULL,
-            fecha_nacimiento DATE, fecha_ingreso DATE, cargo TEXT, departamento TEXT, sucursal_id INTEGER,
-            salario_mensual_usd REAL DEFAULT 0, tipo_pago TEXT DEFAULT 'Quincenal', activo INTEGER DEFAULT 1,
-            email TEXT, telefono TEXT, direccion TEXT, cuenta_bancaria TEXT
-        )
-    ''')
-    cur.execute('''
-        CREATE TABLE IF NOT EXISTS sucursales (
-            id_sucursal SERIAL PRIMARY KEY, nombre TEXT UNIQUE NOT NULL, activo INTEGER DEFAULT 1
-        )
-    ''')
-    cur.execute('''
-        CREATE TABLE IF NOT EXISTS lotes_nomina (
-            id_lote SERIAL PRIMARY KEY, descripcion TEXT, fecha_calculo DATE NOT NULL, 
-            total_usd REAL DEFAULT 0, total_bs REAL DEFAULT 0, cantidad_empleados INTEGER DEFAULT 0
-        )
-    ''')
-    cur.execute('''
-        CREATE TABLE IF NOT EXISTS nominas (
-            id_nomina SERIAL PRIMARY KEY, id_empleado INTEGER NOT NULL, fecha_inicio DATE NOT NULL, fecha_fin DATE NOT NULL,
-            tipo TEXT CHECK(tipo IN ('Quincenal', 'Semanal')), faltas_dias INTEGER DEFAULT 0, salario_base_usd REAL,
-            horas_extras_usd REAL DEFAULT 0, total_asignaciones_usd REAL, total_deducciones_usd REAL,
-            neto_pagar_usd REAL, neto_pagar_bs REAL, tasa_bcv REAL, fecha_calculo DATE,
-            sso_usd REAL DEFAULT 0, rpe_usd REAL DEFAULT 0, faov_usd REAL DEFAULT 0,
-            sso_bs REAL DEFAULT 0, rpe_bs REAL DEFAULT 0, faov_bs REAL DEFAULT 0,
-            descripcion TEXT, lote_id INTEGER
-        )
-    ''')
-    cur.execute("ALTER TABLE nominas ADD COLUMN IF NOT EXISTS descripcion TEXT")
-    cur.execute("ALTER TABLE nominas ADD COLUMN IF NOT EXISTS lote_id INTEGER")
-    cur.execute('''
-        CREATE TABLE IF NOT EXISTS parametros (
-            id SERIAL PRIMARY KEY, clave TEXT UNIQUE NOT NULL, valor REAL NOT NULL, fecha_actualizacion DATE
-        )
-    ''')
-    cur.execute('''
-        CREATE TABLE IF NOT EXISTS usuarios (
-            id SERIAL PRIMARY KEY, username TEXT UNIQUE NOT NULL, password TEXT NOT NULL
-        )
-    ''')
-    # Crear admin si no existe (admin / admin123)
-    default_pass = generate_password_hash('admin123')
-    cur.execute("INSERT INTO usuarios (username, password) VALUES (%s, %s) ON CONFLICT (username) DO NOTHING", ('admin', default_pass))
+    try:
+        conn = get_db_connection()
+        if not conn: return
+        cur = conn.cursor()
+        # Crear tablas
+        cur.execute('''
+            CREATE TABLE IF NOT EXISTS empleados (
+                id_empleado SERIAL PRIMARY KEY, cedula TEXT UNIQUE NOT NULL, nombres TEXT NOT NULL, apellidos TEXT NOT NULL,
+                fecha_nacimiento DATE, fecha_ingreso DATE, cargo TEXT, departamento TEXT, sucursal_id INTEGER,
+                salario_mensual_usd REAL DEFAULT 0, tipo_pago TEXT DEFAULT 'Quincenal', activo INTEGER DEFAULT 1,
+                email TEXT, telefono TEXT, direccion TEXT, cuenta_bancaria TEXT
+            )
+        ''')
+        cur.execute('''
+            CREATE TABLE IF NOT EXISTS sucursales (
+                id_sucursal SERIAL PRIMARY KEY, nombre TEXT UNIQUE NOT NULL, activo INTEGER DEFAULT 1
+            )
+        ''')
+        cur.execute('''
+            CREATE TABLE IF NOT EXISTS lotes_nomina (
+                id_lote SERIAL PRIMARY KEY, descripcion TEXT, fecha_calculo DATE NOT NULL, 
+                total_usd REAL DEFAULT 0, total_bs REAL DEFAULT 0, cantidad_empleados INTEGER DEFAULT 0
+            )
+        ''')
+        cur.execute('''
+            CREATE TABLE IF NOT EXISTS nominas (
+                id_nomina SERIAL PRIMARY KEY, id_empleado INTEGER NOT NULL, fecha_inicio DATE NOT NULL, fecha_fin DATE NOT NULL,
+                tipo TEXT CHECK(tipo IN ('Quincenal', 'Semanal')), faltas_dias INTEGER DEFAULT 0, salario_base_usd REAL,
+                horas_extras_usd REAL DEFAULT 0, total_asignaciones_usd REAL, total_deducciones_usd REAL,
+                neto_pagar_usd REAL, neto_pagar_bs REAL, tasa_bcv REAL, fecha_calculo DATE,
+                sso_usd REAL DEFAULT 0, rpe_usd REAL DEFAULT 0, faov_usd REAL DEFAULT 0,
+                sso_bs REAL DEFAULT 0, rpe_bs REAL DEFAULT 0, faov_bs REAL DEFAULT 0,
+                descripcion TEXT, lote_id INTEGER
+            )
+        ''')
+        cur.execute("ALTER TABLE nominas ADD COLUMN IF NOT EXISTS descripcion TEXT")
+        cur.execute("ALTER TABLE nominas ADD COLUMN IF NOT EXISTS lote_id INTEGER")
+        # 🆕 Crear tabla de usuarios
+        cur.execute('''
+            CREATE TABLE IF NOT EXISTS usuarios (
+                id SERIAL PRIMARY KEY, username TEXT UNIQUE NOT NULL, password TEXT NOT NULL
+            )
+        ''')
+        default_pass = generate_password_hash('admin123')
+        cur.execute("INSERT INTO usuarios (username, password) VALUES (%s, %s) ON CONFLICT (username) DO NOTHING", ('admin', default_pass))
+        # Parámetros
+        cur.execute('''
+            CREATE TABLE IF NOT EXISTS parametros (
+                id SERIAL PRIMARY KEY, clave TEXT UNIQUE NOT NULL, valor REAL NOT NULL, fecha_actualizacion DATE
+            )
+        ''')
+        cur.execute("SELECT * FROM parametros WHERE clave = 'tasa_bcv'")
+        if not cur.fetchone(): cur.execute("INSERT INTO parametros (clave, valor) VALUES ('tasa_bcv', 755.1552)")
+        cur.execute("SELECT * FROM parametros WHERE clave = 'cestaticket_usd'")
+        if not cur.fetchone(): cur.execute("INSERT INTO parametros (clave, valor) VALUES ('cestaticket_usd', 40.0)")
+        cur.execute("SELECT * FROM parametros WHERE clave = 'porcentaje_ivss'")
+        if not cur.fetchone(): cur.execute("INSERT INTO parametros (clave, valor) VALUES ('porcentaje_ivss', 0.04)")
+        cur.execute("SELECT * FROM parametros WHERE clave = 'porcentaje_rpe'")
+        if not cur.fetchone(): cur.execute("INSERT INTO parametros (clave, valor) VALUES ('porcentaje_rpe', 0.005)")
+        cur.execute("SELECT * FROM parametros WHERE clave = 'porcentaje_faov'")
+        if not cur.fetchone(): cur.execute("INSERT INTO parametros (clave, valor) VALUES ('porcentaje_faov', 0.01)")
+        conn.commit(); cur.close(); conn.close()
+        print("✅ Base de datos inicializada correctamente")
+    except Exception as e:
+        print(f"❌ ERROR GRAVE EN init_db: {e}")
 
-    cur.execute("SELECT * FROM parametros WHERE clave = 'tasa_bcv'")
-    if not cur.fetchone(): cur.execute("INSERT INTO parametros (clave, valor) VALUES ('tasa_bcv', 755.1552)")
-    cur.execute("SELECT * FROM parametros WHERE clave = 'cestaticket_usd'")
-    if not cur.fetchone(): cur.execute("INSERT INTO parametros (clave, valor) VALUES ('cestaticket_usd', 40.0)")
-    cur.execute("SELECT * FROM parametros WHERE clave = 'porcentaje_ivss'")
-    if not cur.fetchone(): cur.execute("INSERT INTO parametros (clave, valor) VALUES ('porcentaje_ivss', 0.04)")
-    cur.execute("SELECT * FROM parametros WHERE clave = 'porcentaje_rpe'")
-    if not cur.fetchone(): cur.execute("INSERT INTO parametros (clave, valor) VALUES ('porcentaje_rpe', 0.005)")
-    cur.execute("SELECT * FROM parametros WHERE clave = 'porcentaje_faov'")
-    if not cur.fetchone(): cur.execute("INSERT INTO parametros (clave, valor) VALUES ('porcentaje_faov', 0.01)")
-    conn.commit(); cur.close(); conn.close()
-    print("✅ Base de datos inicializada correctamente")
+# Decorador de login
+def login_required(f):
+    def wrapper(*args, **kwargs):
+        if 'user_id' not in session:
+            return jsonify({'error': 'No autorizado'}), 401
+        return f(*args, **kwargs)
+    wrapper.__name__ = f.__name__
+    return wrapper
 
 # ============================================
-# 🆕 MÓDULO DE AUTENTICACIÓN Y USUARIOS
+# MÓDULO DE AUTENTICACIÓN Y USUARIOS (CORREGIDO)
 # ============================================
 @app.route('/api/login', methods=['POST'])
 def login():
@@ -111,7 +122,6 @@ def login():
     cur.execute("SELECT id, password FROM usuarios WHERE username = %s", (username,))
     user = cur.fetchone()
     cur.close(); conn.close()
-    
     if user and check_password_hash(user[1], password):
         session['user_id'] = user[0]
         session['username'] = username
@@ -130,7 +140,6 @@ def check_auth():
         return jsonify({'authenticated': True, 'username': session.get('username')})
     return jsonify({'authenticated': False}), 401
 
-# 🆕 Obtener lista de usuarios
 @app.route('/api/usuarios', methods=['GET'])
 @login_required
 def get_usuarios():
@@ -142,17 +151,14 @@ def get_usuarios():
     cur.close(); conn.close()
     return jsonify([{'id': r[0], 'username': r[1]} for r in rows])
 
-# 🆕 Crear un nuevo usuario
 @app.route('/api/usuarios', methods=['POST'])
 @login_required
 def crear_usuario():
     data = request.json
     username = data.get('username')
     password = data.get('password')
-    
     if not username or not password:
         return jsonify({'error': 'Usuario y contraseña son requeridos'}), 400
-    
     conn = get_db_connection()
     if not conn: return jsonify({'error': 'Error de conexión'}), 500
     cur = conn.cursor()
@@ -161,36 +167,31 @@ def crear_usuario():
         cur.execute("INSERT INTO usuarios (username, password) VALUES (%s, %s)", (username, hashed_pass))
         conn.commit()
         return jsonify({'mensaje': f'Usuario "{username}" creado exitosamente'})
-    except psycopg2.errors.UniqueViolation:
-        return jsonify({'error': 'El nombre de usuario ya existe'}), 400
     except Exception as e:
+        # CORRECCIÓN: Verificamos si el error contiene el mensaje de duplicado de PostgreSQL
+        if "duplicate key value violates unique constraint" in str(e):
+            return jsonify({'error': 'El nombre de usuario ya existe'}), 400
         return jsonify({'error': str(e)}), 400
     finally:
         cur.close(); conn.close()
 
-# 🆕 Cambiar contraseña del usuario logueado
 @app.route('/api/usuarios/password', methods=['PUT'])
 @login_required
 def cambiar_password():
     data = request.json
     old_password = data.get('old_password')
     new_password = data.get('new_password')
-    
     if not old_password or not new_password:
         return jsonify({'error': 'La contraseña actual y la nueva son requeridas'}), 400
-    
     user_id = session.get('user_id')
     conn = get_db_connection()
     if not conn: return jsonify({'error': 'Error de conexión'}), 500
     cur = conn.cursor()
-    
     cur.execute("SELECT password FROM usuarios WHERE id = %s", (user_id,))
     user = cur.fetchone()
-    
     if not user or not check_password_hash(user[0], old_password):
         cur.close(); conn.close()
         return jsonify({'error': 'La contraseña actual es incorrecta'}), 401
-        
     try:
         new_hashed = generate_password_hash(new_password)
         cur.execute("UPDATE usuarios SET password = %s WHERE id = %s", (new_hashed, user_id))
@@ -201,17 +202,8 @@ def cambiar_password():
     finally:
         cur.close(); conn.close()
 
-# Decorador auxiliar
-def login_required(f):
-    def wrapper(*args, **kwargs):
-        if 'user_id' not in session:
-            return jsonify({'error': 'No autorizado'}), 401
-        return f(*args, **kwargs)
-    wrapper.__name__ = f.__name__
-    return wrapper
-
 # ============================================
-# ENDPOINTS DE NÓMINA (Con @login_required)
+# ENDPOINTS DE NÓMINA (El resto sin cambios)
 # ============================================
 @app.route('/api/empleados', methods=['GET'])
 @login_required
