@@ -109,7 +109,6 @@ def crear_empleado():
     if not conn: return jsonify({'error': 'Error de conexión'}), 500
     cur = conn.cursor()
     try:
-        # 🔽 CORREGIDO CON LOS NOMBRES DE LAS COLUMNAS DENTRO DEL PARÉNTESIS
         cur.execute('''
             INSERT INTO empleados (
                 cedula, nombres, apellidos, fecha_nacimiento, fecha_ingreso, 
@@ -225,7 +224,7 @@ def calcular_nomina():
         horas, valor_hora = horas_data.get('horas', 0), horas_data.get('valor_hora', 0)
         salario_mensual = float(emp[9]) if emp[9] else 0
         salario_diario_full = salario_mensual / 30
-        salario_diario_incidencia = salario_mensual * 0.60 / 30 
+        salario_diario_incidencia = salario_mensual * 0.60 / 30
         total_horas_extras = horas * valor_hora
         
         if tipo == 'Quincenal':
@@ -325,7 +324,7 @@ def calcular_pasivos():
     })
 
 # ============================================
-# CONSULTA Y BORRADO DE LOTES
+# CONSULTA DE LOTES
 # ============================================
 @app.route('/api/lotes', methods=['GET'])
 def get_lotes():
@@ -352,6 +351,48 @@ def get_lotes():
         'total_bs': float(r[4]) if r[4] else 0, 'cantidad_empleados_lote': r[5],
         'sucursales_involucradas': r[7] or 'Mixto / Sin Sucursal'
     } for r in rows])
+
+@app.route('/api/lotes/<int:id>', methods=['GET'])
+def get_lote_detalle(id):
+    conn = get_db_connection()
+    if not conn: return jsonify({'error': 'Error de conexión'}), 500
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM lotes_nomina WHERE id_lote = %s", (id,))
+    lote_row = cur.fetchone()
+    if not lote_row: return jsonify({'error': 'Lote no encontrado'}), 404
+    
+    cur.execute('''
+        SELECT n.*, e.nombres, e.apellidos, e.cedula, s.id_sucursal, s.nombre as sucursal_nombre
+        FROM nominas n
+        JOIN empleados e ON n.id_empleado = e.id_empleado
+        LEFT JOIN sucursales s ON e.sucursal_id = s.id_sucursal
+        WHERE n.lote_id = %s
+        ORDER BY e.nombres
+    ''', (id,))
+    nominas_rows = cur.fetchall(); cur.close(); conn.close()
+    nominas = []
+    for n in nominas_rows:
+        # 🛠️ CORRECCIÓN AQUÍ: Calculamos el 60% de incidencia para el modal del historial
+        salario_base_usd = float(n[6]) if n[6] else 0
+        nominas.append({
+            'id_nomina': n[0], 'id_empleado': n[1], 'fecha_inicio': n[2].isoformat(), 'fecha_fin': n[3].isoformat(),
+            'tipo': n[4], 'faltas_dias': n[5], 'salario_base_usd': salario_base_usd,
+            'base_incidencia_60_usd': salario_base_usd * 0.60,
+            'horas_extras_usd': float(n[7]) if n[7] else 0, 'total_asignaciones_usd': float(n[8]) if n[8] else 0,
+            'total_deducciones_usd': float(n[9]) if n[9] else 0, 'neto_pagar_usd': float(n[10]) if n[10] else 0,
+            'neto_pagar_bs': float(n[11]) if n[11] else 0, 'tasa_bcv': float(n[12]) if n[12] else 0,
+            'fecha_calculo': n[13].isoformat(),
+            'sso_usd': float(n[14]) if n[14] else 0, 'rpe_usd': float(n[15]) if n[15] else 0, 'faov_usd': float(n[16]) if n[16] else 0,
+            'sso_bs': float(n[17]) if n[17] else 0, 'rpe_bs': float(n[18]) if n[18] else 0, 'faov_bs': float(n[19]) if n[19] else 0,
+            'descripcion': n[20], 'lote_id': n[21],
+            'nombres': n[22], 'apellidos': n[23], 'cedula': n[24], 'sucursal_id': n[25], 'sucursal_nombre': n[26] or 'Sin sucursal'
+        })
+    return jsonify({
+        'id_lote': lote_row[0], 'descripcion': lote_row[1], 'fecha_calculo': lote_row[2].isoformat(),
+        'total_usd': float(lote_row[3]) if lote_row[3] else 0, 'total_bs': float(lote_row[4]) if lote_row[4] else 0,
+        'cantidad_empleados_lote': lote_row[5],
+        'nominas': nominas
+    })
 
 @app.route('/api/lotes/<int:id>', methods=['DELETE'])
 def eliminar_lote(id):
