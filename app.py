@@ -77,7 +77,7 @@ def init_db():
     print("✅ Base de datos inicializada correctamente")
 
 # ============================================
-# ENDPOINTS CRUD (EMPLEADOS / SUCURSALES / PARÁMETROS)
+# ENDPOINTS CRUD
 # ============================================
 @app.route('/api/empleados', methods=['GET'])
 def get_empleados():
@@ -109,7 +109,14 @@ def crear_empleado():
     if not conn: return jsonify({'error': 'Error de conexión'}), 500
     cur = conn.cursor()
     try:
-        cur.execute('''INSERT INTO empleados (...) VALUES (...)''', (data['cedula'], data['nombres'], data['apellidos'], data['fecha_nacimiento'], data['fecha_ingreso'], data['cargo'], data['departamento'], data['sucursal_id'], data['salario_mensual_usd'], data['tipo_pago'], data.get('email'), data.get('telefono'), data.get('direccion'), data.get('cuenta_bancaria')))
+        # 🔽 CORREGIDO CON LOS NOMBRES DE LAS COLUMNAS DENTRO DEL PARÉNTESIS
+        cur.execute('''
+            INSERT INTO empleados (
+                cedula, nombres, apellidos, fecha_nacimiento, fecha_ingreso, 
+                cargo, departamento, sucursal_id, salario_mensual_usd, tipo_pago, 
+                email, telefono, direccion, cuenta_bancaria
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        ''', (data['cedula'], data['nombres'], data['apellidos'], data['fecha_nacimiento'], data['fecha_ingreso'], data['cargo'], data['departamento'], data['sucursal_id'], data['salario_mensual_usd'], data['tipo_pago'], data.get('email'), data.get('telefono'), data.get('direccion'), data.get('cuenta_bancaria')))
         conn.commit(); return jsonify({'mensaje': 'Empleado creado exitosamente'})
     except Exception as e: return jsonify({'error': str(e)}), 400
     finally: cur.close(); conn.close()
@@ -183,7 +190,7 @@ def actualizar_parametro():
     finally: cur.close(); conn.close()
 
 # ============================================
-# CÁLCULO DE NÓMINA (Lógica 60% Incidencia + Botón Deducciones)
+# CÁLCULO DE NÓMINA
 # ============================================
 @app.route('/api/calcular_nomina', methods=['POST'])
 def calcular_nomina():
@@ -218,10 +225,9 @@ def calcular_nomina():
         horas, valor_hora = horas_data.get('horas', 0), horas_data.get('valor_hora', 0)
         salario_mensual = float(emp[9]) if emp[9] else 0
         salario_diario_full = salario_mensual / 30
-        salario_diario_incidencia = salario_mensual * 0.60 / 30 # 🆕 Incidencia 60%
+        salario_diario_incidencia = salario_mensual * 0.60 / 30 
         total_horas_extras = horas * valor_hora
         
-        # Lógica de días y cálculos (100%)
         if tipo == 'Quincenal':
             salario_base_full = salario_mensual / 2
             base_incidencia_periodo = salario_mensual * 0.60 / 2
@@ -231,14 +237,12 @@ def calcular_nomina():
         else: # Semanal
             dias_teoricos_trabajo = 7
             dias_descanso = 2
-            # Según LOTTT, el salario semanal es: Diario * 7 días
             salario_base_full = salario_diario_full * 7
             base_incidencia_periodo = salario_diario_incidencia * 7
             total_asignaciones = salario_base_full - (faltas * salario_diario_full) + total_horas_extras
 
         dias_reales_trabajados = max(0, dias_teoricos_trabajo - faltas)
 
-        # Aplicar deducciones (según checkbox)
         if aplicar_deducciones:
             ivss = total_asignaciones * 0.04
             rpe = total_asignaciones * 0.005
@@ -253,7 +257,6 @@ def calcular_nomina():
         total_usd_lote += neto_usd
         total_bs_lote += neto_bs
         
-        # 🔽 Respuesta enriquecida con Base FULL e INCIDENCIA 60%
         calculo = {
             'salario_base_full_usd': salario_base_full,
             'base_incidencia_60_usd': base_incidencia_periodo,
@@ -278,14 +281,18 @@ def calcular_nomina():
 
     for emp, calculo in zip(empleados, resultados):
         cur.execute('''
-            INSERT INTO nominas (...) VALUES (...)
+            INSERT INTO nominas (
+                id_empleado, fecha_inicio, fecha_fin, tipo, faltas_dias, salario_base_usd, horas_extras_usd,
+                total_asignaciones_usd, total_deducciones_usd, neto_pagar_usd, neto_pagar_bs, tasa_bcv, fecha_calculo,
+                sso_usd, rpe_usd, faov_usd, sso_bs, rpe_bs, faov_bs, descripcion, lote_id
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         ''', (emp[0], fecha_inicio, fecha_fin, tipo, calculo['faltas_dias'], calculo['salario_base_full_usd'], calculo['horas_extras_usd'], calculo['total_asignaciones_usd'], calculo['total_deducciones_usd'], calculo['neto_pagar_usd'], calculo['neto_pagar_bs'], tasa_bcv, datetime.now().date(), calculo['sso_usd'], calculo['rpe_usd'], calculo['faov_usd'], calculo['sso_usd'] * tasa_bcv, calculo['rpe_usd'] * tasa_bcv, calculo['faov_usd'] * tasa_bcv, descripcion, lote_id))
         
     conn.commit(); cur.close(); conn.close()
     return jsonify({'tasa_bcv': tasa_bcv, 'resultados': resultados, 'lote_id': lote_id})
 
 # ============================================
-# 🆕 NUEVO MÓDULO: PASIVOS LABORALES (UTILIDADES / AGUINALDO)
+# PASIVOS LABORALES
 # ============================================
 @app.route('/api/calcular_pasivos', methods=['POST'])
 def calcular_pasivos():
