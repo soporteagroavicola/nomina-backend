@@ -1,11 +1,15 @@
 import os
 import psycopg2
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, session
 from flask_cors import CORS
 from datetime import datetime, timedelta
+from werkzeug.security import generate_password_hash, check_password_hash
 
 app = Flask(__name__)
-CORS(app)
+# Clave secreta para encriptar las sesiones (se recomienda cambiarla en producción)
+app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', 'clave_super_secreta_para_nomina_2026')
+# Permitir cookies de sesión entre Frontend y Backend (CORS)
+CORS(app, supports_credentials=True)
 
 def get_db_connection():
     database_url = 'postgresql://nomina_db_naiu_user:58sgnjVGnVRtLVbOVqYiA7d41VXwsHUH@dpg-d9prbrr9ik0c73ci4e0g-a.oregon-postgres.render.com/nomina_db_naiu'
@@ -20,6 +24,7 @@ def init_db():
     conn = get_db_connection()
     if not conn: return
     cur = conn.cursor()
+    # Crear las tablas existentes...
     cur.execute('''
         CREATE TABLE IF NOT EXISTS empleados (
             id_empleado SERIAL PRIMARY KEY, cedula TEXT UNIQUE NOT NULL, nombres TEXT NOT NULL, apellidos TEXT NOT NULL,
@@ -35,12 +40,8 @@ def init_db():
     ''')
     cur.execute('''
         CREATE TABLE IF NOT EXISTS lotes_nomina (
-            id_lote SERIAL PRIMARY KEY, 
-            descripcion TEXT, 
-            fecha_calculo DATE NOT NULL, 
-            total_usd REAL DEFAULT 0, 
-            total_bs REAL DEFAULT 0,
-            cantidad_empleados INTEGER DEFAULT 0
+            id_lote SERIAL PRIMARY KEY, descripcion TEXT, fecha_calculo DATE NOT NULL, 
+            total_usd REAL DEFAULT 0, total_bs REAL DEFAULT 0, cantidad_empleados INTEGER DEFAULT 0
         )
     ''')
     cur.execute('''
@@ -51,18 +52,27 @@ def init_db():
             neto_pagar_usd REAL, neto_pagar_bs REAL, tasa_bcv REAL, fecha_calculo DATE,
             sso_usd REAL DEFAULT 0, rpe_usd REAL DEFAULT 0, faov_usd REAL DEFAULT 0,
             sso_bs REAL DEFAULT 0, rpe_bs REAL DEFAULT 0, faov_bs REAL DEFAULT 0,
-            descripcion TEXT,
-            lote_id INTEGER
+            descripcion TEXT, lote_id INTEGER
         )
     ''')
     cur.execute("ALTER TABLE nominas ADD COLUMN IF NOT EXISTS descripcion TEXT")
     cur.execute("ALTER TABLE nominas ADD COLUMN IF NOT EXISTS lote_id INTEGER")
-    
     cur.execute('''
         CREATE TABLE IF NOT EXISTS parametros (
             id SERIAL PRIMARY KEY, clave TEXT UNIQUE NOT NULL, valor REAL NOT NULL, fecha_actualizacion DATE
         )
     ''')
+    # 🆕 CREAR TABLA DE USUARIOS (LOGIN)
+    cur.execute('''
+        CREATE TABLE IF NOT EXISTS usuarios (
+            id SERIAL PRIMARY KEY, username TEXT UNIQUE NOT NULL, password TEXT NOT NULL
+        )
+    ''')
+    # Insertar usuario administrador por defecto si no existe (admin / admin123)
+    # La contraseña se guarda hasheada (encriptada) por seguridad
+    default_pass = generate_password_hash('admin123')
+    cur.execute("INSERT INTO usuarios (username, password) VALUES (%s, %s) ON CONFLICT (username) DO NOTHING", ('admin', default_pass))
+
     cur.execute("SELECT * FROM parametros WHERE clave = 'tasa_bcv'")
     if not cur.fetchone(): cur.execute("INSERT INTO parametros (clave, valor) VALUES ('tasa_bcv', 755.1552)")
     cur.execute("SELECT * FROM parametros WHERE clave = 'cestaticket_usd'")
@@ -74,13 +84,57 @@ def init_db():
     cur.execute("SELECT * FROM parametros WHERE clave = 'porcentaje_faov'")
     if not cur.fetchone(): cur.execute("INSERT INTO parametros (clave, valor) VALUES ('porcentaje_faov', 0.01)")
     conn.commit(); cur.close(); conn.close()
-    print("✅ Base de datos inicializada correctamente")
+    print("✅ Base de datos inicializada correctamente (Usuario admin creado)")
 
 # ============================================
-# ENDPOINTS CRUD
+# 🆕 MÓDULO DE AUTENTICACIÓN (LOGIN / LOGOUT / CHECK)
+# ============================================
+@app.route('/api/login', methods=['POST'])
+def login():
+    data = request.json
+    username = data.get('username')
+    password = data.get('password')
+    
+    conn = get_db_connection()
+    if not conn: return jsonify({'error': 'Error de conexión'}), 500
+    cur = conn.cursor()
+    cur.execute("SELECT id, password FROM usuarios WHERE username = %s", (username,))
+    user = cur.fetchone()
+    cur.close(); conn.close()
+    
+    if user and check_password_hash(user[1], password):
+        session['user_id'] = user[0]
+        session['username'] = username
+        return jsonify({'mensaje': 'Inicio de sesión exitoso', 'username': username})
+    return jsonify({'error': 'Usuario o contraseña incorrectos'}), 401
+
+@app.route('/api/logout', methods=['POST'])
+def logout():
+    session.clear()
+    return jsonify({'mensaje': 'Sesión cerrada correctamente'})
+
+@app.route('/api/check_auth', methods=['GET'])
+def check_auth():
+    if 'user_id' in session:
+        return jsonify({'authenticated': True, 'username': session.get('username')})
+    return jsonify({'authenticated': False}), 401
+
+# Decorador para proteger las rutas
+def login_required(f):
+    def wrapper(*args, **kwargs):
+        if 'user_id' not in session:
+            return jsonify({'error': 'No autorizado'}), 401
+        return f(*args, **kwargs)
+    wrapper.__name__ = f.__name__
+    return wrapper
+
+# ============================================
+# ENDPOINTS CRUD (TODOS PROTEGIDOS CON login_required)
 # ============================================
 @app.route('/api/empleados', methods=['GET'])
+@login_required
 def get_empleados():
+    # ... (El resto del contenido del endpoint get_empleados sin cambios)
     search = request.args.get('search', '')
     sucursal_id = request.args.get('sucursal_id', '')
     tipo_pago = request.args.get('tipo_pago', '')
@@ -103,6 +157,7 @@ def get_empleados():
     } for r in rows])
 
 @app.route('/api/empleados', methods=['POST'])
+@login_required
 def crear_empleado():
     data = request.json
     conn = get_db_connection()
@@ -110,17 +165,15 @@ def crear_empleado():
     cur = conn.cursor()
     try:
         cur.execute('''
-            INSERT INTO empleados (
-                cedula, nombres, apellidos, fecha_nacimiento, fecha_ingreso, 
-                cargo, departamento, sucursal_id, salario_mensual_usd, tipo_pago, 
-                email, telefono, direccion, cuenta_bancaria
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            INSERT INTO empleados (cedula, nombres, apellidos, fecha_nacimiento, fecha_ingreso, cargo, departamento, sucursal_id, salario_mensual_usd, tipo_pago, email, telefono, direccion, cuenta_bancaria)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         ''', (data['cedula'], data['nombres'], data['apellidos'], data['fecha_nacimiento'], data['fecha_ingreso'], data['cargo'], data['departamento'], data['sucursal_id'], data['salario_mensual_usd'], data['tipo_pago'], data.get('email'), data.get('telefono'), data.get('direccion'), data.get('cuenta_bancaria')))
         conn.commit(); return jsonify({'mensaje': 'Empleado creado exitosamente'})
     except Exception as e: return jsonify({'error': str(e)}), 400
     finally: cur.close(); conn.close()
 
 @app.route('/api/empleados/<int:id>', methods=['DELETE'])
+@login_required
 def eliminar_empleado(id):
     conn = get_db_connection()
     if not conn: return jsonify({'error': 'Error de conexión'}), 500
@@ -132,6 +185,7 @@ def eliminar_empleado(id):
     finally: cur.close(); conn.close()
 
 @app.route('/api/sucursales', methods=['GET'])
+@login_required
 def get_sucursales():
     conn = get_db_connection()
     if not conn: return jsonify([])
@@ -141,6 +195,7 @@ def get_sucursales():
     return jsonify([{'id_sucursal': r[0], 'nombre': r[1], 'activo': r[2]} for r in rows])
 
 @app.route('/api/sucursales', methods=['POST'])
+@login_required
 def crear_sucursal():
     data = request.json
     conn = get_db_connection()
@@ -153,6 +208,7 @@ def crear_sucursal():
     finally: cur.close(); conn.close()
 
 @app.route('/api/sucursales/<int:id>', methods=['DELETE'])
+@login_required
 def eliminar_sucursal(id):
     conn = get_db_connection()
     if not conn: return jsonify({'error': 'Error de conexión'}), 500
@@ -164,6 +220,7 @@ def eliminar_sucursal(id):
     finally: cur.close(); conn.close()
 
 @app.route('/api/parametros', methods=['GET'])
+@login_required
 def get_parametros():
     conn = get_db_connection()
     if not conn: return jsonify({})
@@ -173,6 +230,7 @@ def get_parametros():
     return jsonify({row[0]: float(row[1]) for row in rows})
 
 @app.route('/api/parametros', methods=['PUT'])
+@login_required
 def actualizar_parametro():
     data = request.json
     clave = data.get('clave')
@@ -188,17 +246,14 @@ def actualizar_parametro():
     except Exception as e: return jsonify({'error': str(e)}), 400
     finally: cur.close(); conn.close()
 
-# ============================================
-# CÁLCULO DE NÓMINA
-# ============================================
 @app.route('/api/calcular_nomina', methods=['POST'])
+@login_required
 def calcular_nomina():
     data = request.json
     tipo, fecha_inicio, fecha_fin = data.get('tipo'), data.get('fecha_inicio'), data.get('fecha_fin')
     descripcion = data.get('descripcion', '')
     empleados_ids, faltas_dict, horas_extras_dict = data.get('empleados_ids', []), data.get('faltas', {}), data.get('horas_extras', {})
-    aplicar_deducciones = data.get('aplicar_deducciones', True) 
-    
+    aplicar_deducciones = data.get('aplicar_deducciones', True)
     if not fecha_inicio or not fecha_fin or not empleados_ids: return jsonify({'error': 'Faltan datos'}), 400
     conn = get_db_connection()
     if not conn: return jsonify({'error': 'Error de conexión'}), 500
@@ -208,15 +263,12 @@ def calcular_nomina():
     placeholders = ','.join(['%s'] * len(empleados_ids))
     cur.execute(f"SELECT * FROM empleados WHERE id_empleado IN ({placeholders})", empleados_ids)
     empleados = cur.fetchall()
-    
     resultados = []
     total_usd_lote = 0.0
     total_bs_lote = 0.0
-    
     start_date = datetime.strptime(fecha_inicio, "%Y-%m-%d").date()
     end_date = datetime.strptime(fecha_fin, "%Y-%m-%d").date()
     total_calendar_days = (end_date - start_date).days + 1
-    
     for emp in empleados:
         cedula = emp[1]
         faltas = faltas_dict.get(cedula, 0)
@@ -226,22 +278,19 @@ def calcular_nomina():
         salario_diario_full = salario_mensual / 30
         salario_diario_incidencia = salario_mensual * 0.60 / 30
         total_horas_extras = horas * valor_hora
-        
         if tipo == 'Quincenal':
             salario_base_full = salario_mensual / 2
             base_incidencia_periodo = salario_mensual * 0.60 / 2
             dias_teoricos_trabajo = 11
             dias_descanso = 4
             total_asignaciones = salario_base_full - (faltas * salario_diario_full) + total_horas_extras
-        else: # Semanal
+        else:
             dias_teoricos_trabajo = 7
             dias_descanso = 2
             salario_base_full = salario_diario_full * 7
             base_incidencia_periodo = salario_diario_incidencia * 7
             total_asignaciones = salario_base_full - (faltas * salario_diario_full) + total_horas_extras
-
         dias_reales_trabajados = max(0, dias_teoricos_trabajo - faltas)
-
         if aplicar_deducciones:
             ivss = total_asignaciones * 0.04
             rpe = total_asignaciones * 0.005
@@ -249,13 +298,10 @@ def calcular_nomina():
             total_deducciones = ivss + rpe + faov
         else:
             ivss, rpe, faov, total_deducciones = 0.0, 0.0, 0.0, 0.0
-        
         neto_usd = total_asignaciones - total_deducciones
         neto_bs = neto_usd * tasa_bcv
-        
         total_usd_lote += neto_usd
         total_bs_lote += neto_bs
-        
         calculo = {
             'salario_base_full_usd': salario_base_full,
             'base_incidencia_60_usd': base_incidencia_periodo,
@@ -263,7 +309,7 @@ def calcular_nomina():
             'total_asignaciones_usd': total_asignaciones,
             'total_deducciones_usd': total_deducciones,
             'sso_usd': ivss, 'rpe_usd': rpe, 'faov_usd': faov,
-            'neto_pagar_usd': neto_usd, 'neto_pagar_bs': neto_bs, 
+            'neto_pagar_usd': neto_usd, 'neto_pagar_bs': neto_bs,
             'faltas_dias': faltas,
             'dias_totales_periodo': total_calendar_days,
             'dias_descanso': dias_descanso,
@@ -271,35 +317,26 @@ def calcular_nomina():
             'empleado': {'id': emp[0], 'cedula': cedula, 'nombre_completo': f"{emp[2]} {emp[3]}"}
         }
         resultados.append(calculo)
-
     cur.execute('''
         INSERT INTO lotes_nomina (descripcion, fecha_calculo, total_usd, total_bs, cantidad_empleados)
         VALUES (%s, %s, %s, %s, %s) RETURNING id_lote
     ''', (descripcion, datetime.now().date(), total_usd_lote, total_bs_lote, len(empleados)))
     lote_id = cur.fetchone()[0]
-
     for emp, calculo in zip(empleados, resultados):
         cur.execute('''
-            INSERT INTO nominas (
-                id_empleado, fecha_inicio, fecha_fin, tipo, faltas_dias, salario_base_usd, horas_extras_usd,
-                total_asignaciones_usd, total_deducciones_usd, neto_pagar_usd, neto_pagar_bs, tasa_bcv, fecha_calculo,
-                sso_usd, rpe_usd, faov_usd, sso_bs, rpe_bs, faov_bs, descripcion, lote_id
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            INSERT INTO nominas (id_empleado, fecha_inicio, fecha_fin, tipo, faltas_dias, salario_base_usd, horas_extras_usd, total_asignaciones_usd, total_deducciones_usd, neto_pagar_usd, neto_pagar_bs, tasa_bcv, fecha_calculo, sso_usd, rpe_usd, faov_usd, sso_bs, rpe_bs, faov_bs, descripcion, lote_id)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         ''', (emp[0], fecha_inicio, fecha_fin, tipo, calculo['faltas_dias'], calculo['salario_base_full_usd'], calculo['horas_extras_usd'], calculo['total_asignaciones_usd'], calculo['total_deducciones_usd'], calculo['neto_pagar_usd'], calculo['neto_pagar_bs'], tasa_bcv, datetime.now().date(), calculo['sso_usd'], calculo['rpe_usd'], calculo['faov_usd'], calculo['sso_usd'] * tasa_bcv, calculo['rpe_usd'] * tasa_bcv, calculo['faov_usd'] * tasa_bcv, descripcion, lote_id))
-        
     conn.commit(); cur.close(); conn.close()
     return jsonify({'tasa_bcv': tasa_bcv, 'resultados': resultados, 'lote_id': lote_id})
 
-# ============================================
-# PASIVOS LABORALES
-# ============================================
 @app.route('/api/calcular_pasivos', methods=['POST'])
+@login_required
 def calcular_pasivos():
     data = request.json
     salario_mensual = data.get('salario_mensual', 0)
     dias = data.get('dias', 30)
     usar_base_60 = data.get('usar_base_60', True)
-    
     conn = get_db_connection()
     if not conn: return jsonify({'error': 'Error de conexión'}), 500
     cur = conn.cursor()
@@ -307,14 +344,10 @@ def calcular_pasivos():
     tasa_row = cur.fetchone()
     tasa_bcv = float(tasa_row[0]) if tasa_row else 755.1552
     cur.close(); conn.close()
-    
     salario_diario = salario_mensual / 30
-    if usar_base_60:
-        salario_diario = salario_diario * 0.60
-        
+    if usar_base_60: salario_diario = salario_diario * 0.60
     total_usd = salario_diario * dias
     total_bs = total_usd * tasa_bcv
-    
     return jsonify({
         'dias': dias,
         'tasa_bcv': tasa_bcv,
@@ -323,10 +356,8 @@ def calcular_pasivos():
         'total_bs': total_bs
     })
 
-# ============================================
-# CONSULTA DE LOTES
-# ============================================
 @app.route('/api/lotes', methods=['GET'])
+@login_required
 def get_lotes():
     search = request.args.get('search', '')
     conn = get_db_connection()
@@ -353,6 +384,7 @@ def get_lotes():
     } for r in rows])
 
 @app.route('/api/lotes/<int:id>', methods=['GET'])
+@login_required
 def get_lote_detalle(id):
     conn = get_db_connection()
     if not conn: return jsonify({'error': 'Error de conexión'}), 500
@@ -360,7 +392,6 @@ def get_lote_detalle(id):
     cur.execute("SELECT * FROM lotes_nomina WHERE id_lote = %s", (id,))
     lote_row = cur.fetchone()
     if not lote_row: return jsonify({'error': 'Lote no encontrado'}), 404
-    
     cur.execute('''
         SELECT n.*, e.nombres, e.apellidos, e.cedula, s.id_sucursal, s.nombre as sucursal_nombre
         FROM nominas n
@@ -372,7 +403,6 @@ def get_lote_detalle(id):
     nominas_rows = cur.fetchall(); cur.close(); conn.close()
     nominas = []
     for n in nominas_rows:
-        # 🛠️ CORRECCIÓN AQUÍ: Calculamos el 60% de incidencia para el modal del historial
         salario_base_usd = float(n[6]) if n[6] else 0
         nominas.append({
             'id_nomina': n[0], 'id_empleado': n[1], 'fecha_inicio': n[2].isoformat(), 'fecha_fin': n[3].isoformat(),
@@ -395,6 +425,7 @@ def get_lote_detalle(id):
     })
 
 @app.route('/api/lotes/<int:id>', methods=['DELETE'])
+@login_required
 def eliminar_lote(id):
     conn = get_db_connection()
     if not conn: return jsonify({'error': 'Error de conexión'}), 500
