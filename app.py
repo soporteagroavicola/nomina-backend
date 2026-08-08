@@ -7,17 +7,16 @@ from werkzeug.security import generate_password_hash, check_password_hash
 
 app = Flask(__name__)
 
-# 🔽 CONFIGURACIÓN DE SEGURIDAD DE SESIÓN (SOLUCIÓN AL PROBLEMA DE LOGOUT)
+# Configuración de seguridad
 app.config.update(
     SECRET_KEY=os.getenv('SECRET_KEY', 'clave_super_secreta_para_nomina_2026'),
     SESSION_COOKIE_HTTPONLY=True,
-    SESSION_COOKIE_SAMESITE='None',      # ⚠️ CRÍTICO: Permite que el navegador envíe la cookie desde el frontend
-    SESSION_COOKIE_SECURE=True,          # ⚠️ CRÍTICO: Solo se envía por HTTPS (Render usa HTTPS)
-    PERMANENT_SESSION_LIFETIME=timedelta(hours=8) # La sesión dura 8 horas continuas
+    SESSION_COOKIE_SAMESITE='None',
+    SESSION_COOKIE_SECURE=True,
+    PERMANENT_SESSION_LIFETIME=timedelta(hours=8)
 )
 
-# 🔽 CONFIGURACIÓN CORS EXPLÍCITA Y SEGURA
-# Agrega aquí los dominios exactos de tu frontend local y el de Render
+# CORS
 frontend_urls = [
     "https://nomina-frontend.onrender.com",
     "http://localhost:5000",
@@ -38,7 +37,7 @@ def init_db():
     conn = get_db_connection()
     if not conn: return
     cur = conn.cursor()
-    # Crear tablas y admin (código idéntico al anterior)
+    # Crear tablas base
     cur.execute('''
         CREATE TABLE IF NOT EXISTS empleados (
             id_empleado SERIAL PRIMARY KEY, cedula TEXT UNIQUE NOT NULL, nombres TEXT NOT NULL, apellidos TEXT NOT NULL,
@@ -81,6 +80,7 @@ def init_db():
             id SERIAL PRIMARY KEY, username TEXT UNIQUE NOT NULL, password TEXT NOT NULL
         )
     ''')
+    # Crear admin si no existe (admin / admin123)
     default_pass = generate_password_hash('admin123')
     cur.execute("INSERT INTO usuarios (username, password) VALUES (%s, %s) ON CONFLICT (username) DO NOTHING", ('admin', default_pass))
 
@@ -98,7 +98,7 @@ def init_db():
     print("✅ Base de datos inicializada correctamente")
 
 # ============================================
-# MÓDULO DE AUTENTICACIÓN (LOGIN / LOGOUT / CHECK)
+# 🆕 MÓDULO DE AUTENTICACIÓN Y USUARIOS
 # ============================================
 @app.route('/api/login', methods=['POST'])
 def login():
@@ -115,7 +115,7 @@ def login():
     if user and check_password_hash(user[1], password):
         session['user_id'] = user[0]
         session['username'] = username
-        session.permanent = True # 🛠️ Marcar la sesión como permanente (dará 8 horas)
+        session.permanent = True
         return jsonify({'mensaje': 'Inicio de sesión exitoso', 'username': username})
     return jsonify({'error': 'Usuario o contraseña incorrectos'}), 401
 
@@ -130,6 +130,78 @@ def check_auth():
         return jsonify({'authenticated': True, 'username': session.get('username')})
     return jsonify({'authenticated': False}), 401
 
+# 🆕 Obtener lista de usuarios
+@app.route('/api/usuarios', methods=['GET'])
+@login_required
+def get_usuarios():
+    conn = get_db_connection()
+    if not conn: return jsonify({'error': 'Error de conexión'}), 500
+    cur = conn.cursor()
+    cur.execute("SELECT id, username FROM usuarios ORDER BY id")
+    rows = cur.fetchall()
+    cur.close(); conn.close()
+    return jsonify([{'id': r[0], 'username': r[1]} for r in rows])
+
+# 🆕 Crear un nuevo usuario
+@app.route('/api/usuarios', methods=['POST'])
+@login_required
+def crear_usuario():
+    data = request.json
+    username = data.get('username')
+    password = data.get('password')
+    
+    if not username or not password:
+        return jsonify({'error': 'Usuario y contraseña son requeridos'}), 400
+    
+    conn = get_db_connection()
+    if not conn: return jsonify({'error': 'Error de conexión'}), 500
+    cur = conn.cursor()
+    try:
+        hashed_pass = generate_password_hash(password)
+        cur.execute("INSERT INTO usuarios (username, password) VALUES (%s, %s)", (username, hashed_pass))
+        conn.commit()
+        return jsonify({'mensaje': f'Usuario "{username}" creado exitosamente'})
+    except psycopg2.errors.UniqueViolation:
+        return jsonify({'error': 'El nombre de usuario ya existe'}), 400
+    except Exception as e:
+        return jsonify({'error': str(e)}), 400
+    finally:
+        cur.close(); conn.close()
+
+# 🆕 Cambiar contraseña del usuario logueado
+@app.route('/api/usuarios/password', methods=['PUT'])
+@login_required
+def cambiar_password():
+    data = request.json
+    old_password = data.get('old_password')
+    new_password = data.get('new_password')
+    
+    if not old_password or not new_password:
+        return jsonify({'error': 'La contraseña actual y la nueva son requeridas'}), 400
+    
+    user_id = session.get('user_id')
+    conn = get_db_connection()
+    if not conn: return jsonify({'error': 'Error de conexión'}), 500
+    cur = conn.cursor()
+    
+    cur.execute("SELECT password FROM usuarios WHERE id = %s", (user_id,))
+    user = cur.fetchone()
+    
+    if not user or not check_password_hash(user[0], old_password):
+        cur.close(); conn.close()
+        return jsonify({'error': 'La contraseña actual es incorrecta'}), 401
+        
+    try:
+        new_hashed = generate_password_hash(new_password)
+        cur.execute("UPDATE usuarios SET password = %s WHERE id = %s", (new_hashed, user_id))
+        conn.commit()
+        return jsonify({'mensaje': 'Contraseña actualizada exitosamente'})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 400
+    finally:
+        cur.close(); conn.close()
+
+# Decorador auxiliar
 def login_required(f):
     def wrapper(*args, **kwargs):
         if 'user_id' not in session:
@@ -139,7 +211,7 @@ def login_required(f):
     return wrapper
 
 # ============================================
-# ENDPOINTS (EL RESTO DE RUTAS CON @login_required)
+# ENDPOINTS DE NÓMINA (Con @login_required)
 # ============================================
 @app.route('/api/empleados', methods=['GET'])
 @login_required
