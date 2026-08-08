@@ -20,7 +20,6 @@ def init_db():
     conn = get_db_connection()
     if not conn: return
     cur = conn.cursor()
-    # Tabla Empleados
     cur.execute('''
         CREATE TABLE IF NOT EXISTS empleados (
             id_empleado SERIAL PRIMARY KEY, cedula TEXT UNIQUE NOT NULL, nombres TEXT NOT NULL, apellidos TEXT NOT NULL,
@@ -29,13 +28,11 @@ def init_db():
             email TEXT, telefono TEXT, direccion TEXT, cuenta_bancaria TEXT
         )
     ''')
-    # Tabla Sucursales
     cur.execute('''
         CREATE TABLE IF NOT EXISTS sucursales (
             id_sucursal SERIAL PRIMARY KEY, nombre TEXT UNIQUE NOT NULL, activo INTEGER DEFAULT 1
         )
     ''')
-    # 🆕 Tabla Lotes de Nómina (Para agrupar y tener el total general)
     cur.execute('''
         CREATE TABLE IF NOT EXISTS lotes_nomina (
             id_lote SERIAL PRIMARY KEY, 
@@ -46,7 +43,6 @@ def init_db():
             cantidad_empleados INTEGER DEFAULT 0
         )
     ''')
-    # Tabla Nóminas (Agregamos el campo lote_id)
     cur.execute('''
         CREATE TABLE IF NOT EXISTS nominas (
             id_nomina SERIAL PRIMARY KEY, id_empleado INTEGER NOT NULL, fecha_inicio DATE NOT NULL, fecha_fin DATE NOT NULL,
@@ -60,7 +56,7 @@ def init_db():
         )
     ''')
     cur.execute("ALTER TABLE nominas ADD COLUMN IF NOT EXISTS descripcion TEXT")
-    cur.execute("ALTER TABLE nominas ADD COLUMN IF NOT EXISTS lote_id INTEGER") # 🆕 Añadir columna lote_id si no existe
+    cur.execute("ALTER TABLE nominas ADD COLUMN IF NOT EXISTS lote_id INTEGER")
     
     cur.execute('''
         CREATE TABLE IF NOT EXISTS parametros (
@@ -81,7 +77,7 @@ def init_db():
     print("✅ Base de datos inicializada correctamente")
 
 # ============================================
-# MÓDULO EMPLEADOS Y SUCURSALES
+# EMPLEADOS Y SUCURSALES
 # ============================================
 @app.route('/api/empleados', methods=['GET'])
 def get_empleados():
@@ -162,12 +158,12 @@ def eliminar_sucursal(id):
     finally: cur.close(); conn.close()
 
 # ============================================
-# 🆕 MÓDULO CALCULAR NÓMINA (NUEVO: CREACIÓN DE LOTES Y TOTALES)
+# CÁLCULO DE NÓMINA Y LOTES
 # ============================================
 @app.route('/api/calcular_nomina', methods=['POST'])
 def calcular_nomina():
     data = request.json
-    tipo, fecha_inicio, fecha_fin = data.get('tipo'), data.get('fecha_inicio'), data.get('fecha_fin')
+    tipo, fecha_inicio, fecha_fin = data.get('tipo'), data.get('fecha_inicio'), data.get(' fecha_fin')
     descripcion = data.get('descripcion', '')
     empleados_ids, faltas_dict, horas_extras_dict = data.get('empleados_ids', []), data.get('faltas', {}), data.get('horas_extras', {})
     if not fecha_inicio or not fecha_fin or not empleados_ids: return jsonify({'error': 'Faltan datos'}), 400
@@ -180,7 +176,6 @@ def calcular_nomina():
     cur.execute(f"SELECT * FROM empleados WHERE id_empleado IN ({placeholders})", empleados_ids)
     empleados = cur.fetchall()
     
-    # 🔽 1. Calcular todos los resultados y sumar los totales para el Lote
     resultados = []
     total_usd_lote = 0.0
     total_bs_lote = 0.0
@@ -230,7 +225,6 @@ def calcular_nomina():
         }
         resultados.append(calculo)
 
-    # 🔽 2. Guardar el LOTE en la base de datos
     cur.execute('''
         INSERT INTO lotes_nomina (descripcion, fecha_calculo, total_usd, total_bs, cantidad_empleados)
         VALUES (%s, %s, %s, %s, %s)
@@ -238,7 +232,6 @@ def calcular_nomina():
     ''', (descripcion, datetime.now().date(), total_usd_lote, total_bs_lote, len(empleados)))
     lote_id = cur.fetchone()[0]
 
-    # 🔽 3. Guardar los detalles (Nóminas) con el id_lote y el total del lote
     for emp, calculo in zip(empleados, resultados):
         cur.execute('''
             INSERT INTO nominas (
@@ -252,7 +245,7 @@ def calcular_nomina():
     return jsonify({'tasa_bcv': tasa_bcv, 'resultados': resultados, 'lote_id': lote_id})
 
 # ============================================
-# 🆕 MÓDULO CONSULTA DE LOTES (Historial agrupado)
+# CONSULTA Y BORRADO DE LOTES
 # ============================================
 @app.route('/api/lotes', methods=['GET'])
 def get_lotes():
@@ -289,12 +282,10 @@ def get_lote_detalle(id):
     conn = get_db_connection()
     if not conn: return jsonify([])
     cur = conn.cursor()
-    # Obtener datos del lote
     cur.execute("SELECT * FROM lotes_nomina WHERE id_lote = %s", (id,))
     lote_row = cur.fetchone()
     if not lote_row: return jsonify({'error': 'Lote no encontrado'}), 404
     
-    # Obtener las nóminas de ese lote
     cur.execute('''
         SELECT n.*, e.nombres, e.apellidos, e.cedula, s.id_sucursal, s.nombre as sucursal_nombre
         FROM nominas n
@@ -324,6 +315,25 @@ def get_lote_detalle(id):
         'cantidad_empleados_lote': lote_row[5],
         'nominas': nominas
     })
+
+# 🆕 NUEVO ENDPOINT: Borrar un Lote completo y sus nóminas asociadas
+@app.route('/api/lotes/<int:id>', methods=['DELETE'])
+def eliminar_lote(id):
+    conn = get_db_connection()
+    if not conn: return jsonify({'error': 'Error de conexión'}), 500
+    cur = conn.cursor()
+    try:
+        # 1. Eliminar todas las nóminas vinculadas a este lote
+        cur.execute("DELETE FROM nominas WHERE lote_id = %s", (id,))
+        # 2. Eliminar el lote
+        cur.execute("DELETE FROM lotes_nomina WHERE id_lote = %s", (id,))
+        conn.commit()
+        return jsonify({'mensaje': 'Lote de nómina y todos sus registros eliminados exitosamente'})
+    except Exception as e:
+        conn.rollback() # Si falla, deshacemos todo
+        return jsonify({'error': str(e)}), 400
+    finally:
+        cur.close(); conn.close()
 
 with app.app_context(): init_db()
 if __name__ == '__main__':
