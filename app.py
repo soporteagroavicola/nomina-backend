@@ -137,6 +137,7 @@ def init_db():
                 fecha_inicio DATE NOT NULL,
                 fecha_fin DATE NOT NULL,
                 dias_pagados INTEGER NOT NULL,
+                faltas_dias INTEGER DEFAULT 0,
                 valor_diario_usd REAL NOT NULL,
                 tasa_bcv REAL NOT NULL,
                 total_usd REAL NOT NULL,
@@ -608,7 +609,7 @@ def calcular_pasivos():
     })
 
 # ============================================
-# 🆕 ENDPOINT: CÁLCULO DE CESTATICKET
+# 🆕 ENDPOINT: CÁLCULO DE CESTATICKET (CON DESCUENTO DE FALTAS)
 # ============================================
 @app.route('/api/calcular_cestaticket', methods=['POST'])
 @login_required
@@ -617,6 +618,7 @@ def calcular_cestaticket():
     fecha_inicio, fecha_fin = data.get('fecha_inicio'), data.get('fecha_fin')
     descripcion = data.get('descripcion', '')
     empleados_ids = data.get('empleados_ids', [])
+    faltas_dict = data.get('faltas', {}) # 🆕 Leer faltas del request
 
     if not fecha_inicio or not fecha_fin or not empleados_ids: return jsonify({'error': 'Faltan datos'}), 400
     conn = get_db_connection()
@@ -647,12 +649,15 @@ def calcular_cestaticket():
 
     for emp in empleados:
         cedula = emp[1]
-        total_usd = working_days * valor_diario_usd
+        faltas = faltas_dict.get(cedula, 0) # 🆕 Restar las faltas
+        dias_efectivos = max(0, working_days - faltas) # 🆕 Días a pagar
+
+        total_usd = dias_efectivos * valor_diario_usd
         total_bs = total_usd * tasa_bcv
         total_bs_lote += total_bs
 
         calculo = {
-            'dias_pagados': working_days,
+            'dias_pagados': dias_efectivos,
             'valor_diario_usd': valor_diario_usd,
             'total_usd': total_usd,
             'total_bs': total_bs,
@@ -670,9 +675,9 @@ def calcular_cestaticket():
     # Guardar detalles
     for emp, calculo in zip(empleados, resultados):
         cur.execute('''
-            INSERT INTO cestaticket_nominas (id_empleado, fecha_inicio, fecha_fin, dias_pagados, valor_diario_usd, tasa_bcv, total_usd, total_bs, descripcion, lote_id)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-        ''', (emp[0], fecha_inicio, fecha_fin, calculo['dias_pagados'], valor_diario_usd, tasa_bcv, calculo['total_usd'], calculo['total_bs'], descripcion, lote_id))
+            INSERT INTO cestaticket_nominas (id_empleado, fecha_inicio, fecha_fin, dias_pagados, faltas_dias, valor_diario_usd, tasa_bcv, total_usd, total_bs, descripcion, lote_id)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        ''', (emp[0], fecha_inicio, fecha_fin, calculo['dias_pagados'], faltas, valor_diario_usd, tasa_bcv, calculo['total_usd'], calculo['total_bs'], descripcion, lote_id))
 
     conn.commit(); cur.close(); conn.close()
     return jsonify({'tasa_bcv': tasa_bcv, 'valor_diario_usd': valor_diario_usd, 'resultados': resultados, 'lote_id': lote_id})
@@ -716,7 +721,7 @@ def get_lote_detalle_cestaticket(id):
         if not lote_row: return jsonify({'error': 'Lote no encontrado'}), 404
         cur.execute('''
             SELECT 
-                c.id, c.id_empleado, c.fecha_inicio, c.fecha_fin, c.dias_pagados, 
+                c.id, c.id_empleado, c.fecha_inicio, c.fecha_fin, c.dias_pagados, c.faltas_dias,
                 c.valor_diario_usd, c.tasa_bcv, c.total_usd, c.total_bs, c.descripcion, c.lote_id,
                 e.nombres, e.apellidos, e.cedula
             FROM cestaticket_nominas c
@@ -733,12 +738,13 @@ def get_lote_detalle_cestaticket(id):
                 'id': c[0], 'id_empleado': c[1], 
                 'fecha_inicio': c[2].isoformat() if c[2] else None, 
                 'fecha_fin': c[3].isoformat() if c[3] else None,
-                'dias_pagados': c[4], 'valor_diario_usd': float(c[5]) if c[5] else 0,
-                'tasa_bcv': float(c[6]) if c[6] else 0, 'total_usd': float(c[7]) if c[7] else 0,
-                'total_bs': float(c[8]) if c[8] else 0, 'descripcion': c[9] if c[9] else '',
-                'lote_id': c[10] if c[10] else None,
-                'nombres': c[11] if c[11] else '', 'apellidos': c[12] if c[12] else '',
-                'cedula': c[13] if c[13] else ''
+                'dias_pagados': c[4], 'faltas_dias': c[5],
+                'valor_diario_usd': float(c[6]) if c[6] else 0,
+                'tasa_bcv': float(c[7]) if c[7] else 0, 'total_usd': float(c[8]) if c[8] else 0,
+                'total_bs': float(c[9]) if c[9] else 0, 'descripcion': c[10] if c[10] else '',
+                'lote_id': c[11] if c[11] else None,
+                'nombres': c[12] if c[12] else '', 'apellidos': c[13] if c[13] else '',
+                'cedula': c[14] if c[14] else ''
             })
         return jsonify({
             'id_lote': lote_row[0], 'descripcion': lote_row[1], 'fecha_calculo': lote_row[2].isoformat() if lote_row[2] else None,
@@ -853,7 +859,7 @@ def generar_recibo_cestaticket(id):
         cur = conn.cursor()
         cur.execute('''
             SELECT 
-                c.id, c.id_empleado, c.fecha_inicio, c.fecha_fin, c.dias_pagados, 
+                c.id, c.id_empleado, c.fecha_inicio, c.fecha_fin, c.dias_pagados, c.faltas_dias,
                 c.valor_diario_usd, c.tasa_bcv, c.total_usd, c.total_bs, c.descripcion, c.lote_id,
                 e.nombres, e.apellidos, e.cedula, e.cargo
             FROM cestaticket_nominas c
@@ -873,10 +879,10 @@ def generar_recibo_cestaticket(id):
         fecha_inicio = c[2].strftime("%d/%m/%Y") if c[2] else ''
         fecha_fin = c[3].strftime("%d/%m/%Y") if c[3] else ''
         dias_pagados = c[4]
-        valor_diario_usd = float(c[5]) if c[5] else 0
-        tasa_bcv = float(c[6]) if c[6] else 0
-        total_usd = float(c[7]) if c[7] else 0
-        total_bs = float(c[8]) if c[8] else 0
+        valor_diario_usd = float(c[6]) if c[6] else 0
+        tasa_bcv = float(c[7]) if c[7] else 0
+        total_usd = float(c[8]) if c[8] else 0
+        total_bs = float(c[9]) if c[9] else 0
 
         buffer = BytesIO()
         doc = SimpleDocTemplate(buffer, pagesize=A4, leftMargin=20*mm, rightMargin=20*mm, topMargin=20*mm, bottomMargin=20*mm)
@@ -956,7 +962,110 @@ def generar_recibo_cestaticket(id):
         return jsonify({'error': str(e)}), 500
 
 # ============================================
-# GENERADOR DE PDF DEL LOTE DE NÓMINA Y CESTATICKET
+# 🛠️ CORREGIDO: ENDPOINT DE HISTORIAL DE NÓMINAS (CON COLUMNAS EXPLÍCITAS)
+# ============================================
+@app.route('/api/lotes', methods=['GET'])
+@login_required
+def get_lotes():
+    search = request.args.get('search', '')
+    conn = get_db_connection()
+    if not conn: return jsonify([])
+    cur = conn.cursor()
+    
+    # 🛠️ Corrección crítica: Pedir las columnas una por una por su nombre
+    query = '''
+        SELECT 
+            l.id_lote, l.descripcion, l.fecha_calculo, l.total_usd, l.total_bs, l.cantidad_empleados,
+            COUNT(n.id_nomina) as total_empleados_detalle,
+            STRING_AGG(DISTINCT s.nombre, ', ') as sucursales_involucradas
+        FROM lotes_nomina l
+        LEFT JOIN nominas n ON l.id_lote = n.lote_id
+        LEFT JOIN empleados e ON n.id_empleado = e.id_empleado
+        LEFT JOIN sucursales s ON e.sucursal_id = s.id_sucursal
+        WHERE 1=1
+    '''
+    params = []
+    if search: query += " AND (l.descripcion ILIKE %s OR CAST(l.id_lote AS TEXT) ILIKE %s)"; sp = f"%{search}%"; params.extend([sp, sp])
+    query += " GROUP BY l.id_lote ORDER BY l.fecha_calculo DESC, l.id_lote DESC"
+    cur.execute(query, params)
+    rows = cur.fetchall(); cur.close(); conn.close()
+    
+    return jsonify([{
+        'id_lote': r[0], 'descripcion': r[1], 'fecha_calculo': r[2].isoformat() if r[2] else None,
+        'total_usd': float(r[3]) if r[3] else 0, 'total_bs': float(r[4]) if r[4] else 0,
+        'cantidad_empleados_lote': r[5],
+        'sucursales_involucradas': r[7] or 'Mixto / Sin Sucursal'
+    } for r in rows])
+
+@app.route('/api/lotes/<int:id>', methods=['GET'])
+@login_required
+def get_lote_detalle(id):
+    try:
+        conn = get_db_connection()
+        if not conn: return jsonify({'error': 'Error de conexión a la BD'}), 500
+        cur = conn.cursor()
+        cur.execute("SELECT * FROM lotes_nomina WHERE id_lote = %s", (id,))
+        lote_row = cur.fetchone()
+        if not lote_row: return jsonify({'error': 'Lote no encontrado'}), 404
+        cur.execute('''
+            SELECT 
+                n.id_nomina, n.id_empleado, n.fecha_inicio, n.fecha_fin, n.tipo, n.faltas_dias, 
+                n.salario_base_usd, n.horas_extras_usd, n.bono_complementario_usd, n.total_asignaciones_usd, 
+                n.total_deducciones_usd, n.neto_pagar_usd, n.neto_pagar_bs, n.tasa_bcv, n.fecha_calculo, 
+                n.sso_usd, n.rpe_usd, n.faov_usd, n.sso_bs, n.rpe_bs, n.faov_bs, 
+                n.descripcion, n.lote_id,
+                e.nombres, e.apellidos, e.cedula, s.id_sucursal, s.nombre as sucursal_nombre
+            FROM nominas n
+            JOIN empleados e ON n.id_empleado = e.id_empleado
+            LEFT JOIN sucursales s ON e.sucursal_id = s.id_sucursal
+            WHERE n.lote_id = %s
+            ORDER BY e.nombres
+        ''', (id,))
+        nominas_rows = cur.fetchall()
+        cur.close(); conn.close()
+        nominas = []
+        for n in nominas_rows:
+            salario_base_usd = float(n[6]) if n[6] else 0
+            nominas.append({
+                'id_nomina': n[0], 'id_empleado': n[1], 
+                'fecha_inicio': n[2].isoformat() if n[2] else None, 
+                'fecha_fin': n[3].isoformat() if n[3] else None,
+                'tipo': n[4], 'faltas_dias': n[5], 'salario_base_usd': salario_base_usd,
+                'base_incidencia_60_usd': salario_base_usd * 0.60,
+                'horas_extras_usd': float(n[7]) if n[7] else 0,
+                'bono_complementario_usd': float(n[8]) if n[8] else 0,
+                'total_asignaciones_usd': float(n[9]) if n[9] else 0,
+                'total_deducciones_usd': float(n[10]) if n[10] else 0,
+                'neto_pagar_usd': float(n[11]) if n[11] else 0,
+                'neto_pagar_bs': float(n[12]) if n[12] else 0,
+                'tasa_bcv': float(n[13]) if n[13] else 0,
+                'fecha_calculo': n[14].isoformat() if n[14] else None,
+                'sso_usd': float(n[15]) if n[15] else 0,
+                'rpe_usd': float(n[16]) if n[16] else 0,
+                'faov_usd': float(n[17]) if n[17] else 0,
+                'sso_bs': float(n[18]) if n[18] else 0,
+                'rpe_bs': float(n[19]) if n[19] else 0,
+                'faov_bs': float(n[20]) if n[20] else 0,
+                'descripcion': n[21] if n[21] else '',
+                'lote_id': n[22] if n[22] else None,
+                'nombres': n[23] if n[23] else '',
+                'apellidos': n[24] if n[24] else '',
+                'cedula': n[25] if n[25] else '',
+                'sucursal_id': n[26] if n[26] else None,
+                'sucursal_nombre': n[27] if n[27] else 'Sin sucursal'
+            })
+        return jsonify({
+            'id_lote': lote_row[0], 'descripcion': lote_row[1], 'fecha_calculo': lote_row[2].isoformat() if lote_row[2] else None,
+            'total_usd': float(lote_row[3]) if lote_row[3] else 0, 'total_bs': float(lote_row[4]) if lote_row[4] else 0,
+            'cantidad_empleados_lote': lote_row[5],
+            'nominas': nominas
+        })
+    except Exception as e:
+        print(f"❌ Error crítico en get_lote_detalle: {e}")
+        return jsonify({'error': f'Error interno del servidor: {str(e)}'}), 500
+
+# ============================================
+# GENERADOR DE PDF DEL LOTE DE NÓMINA
 # ============================================
 @app.route('/api/generar_lote_pdf/<int:lote_id>', methods=['GET'])
 @login_required
@@ -1216,5 +1325,4 @@ def eliminar_lote(id):
 with app.app_context(): init_db()
 if __name__ == '__main__':
     port = int(os.getenv("PORT", 5000))
-    app.run(host='0.0.0.0', port=port, debug=False)
     app.run(host='0.0.0.0', port=port, debug=False)
