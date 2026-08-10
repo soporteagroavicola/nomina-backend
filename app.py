@@ -10,7 +10,7 @@ from reportlab.pdfgen import canvas
 from reportlab.lib.pagesizes import A4, landscape
 from reportlab.lib.units import inch, mm
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
+from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, Image
 from reportlab.lib import colors
 
 app = Flask(__name__)
@@ -767,7 +767,7 @@ def generar_archivo_pago(lote_id):
         return jsonify({'error': f'Error interno generando el archivo de pago: {str(e)}'}), 500
 
 # ============================================
-# 🆕 GENERADOR DE PDF DEL LOTE COMPLETO (CORREGIDO)
+# 🆕 GENERADOR DE PDF DEL LOTE COMPLETO (CON LOGO Y FORMATO CORREGIDO)
 # ============================================
 @app.route('/api/generar_lote_pdf/<int:lote_id>', methods=['GET'])
 @login_required
@@ -798,7 +798,23 @@ def generar_lote_pdf(lote_id):
         normal_style = styles['Normal']
         title_style = ParagraphStyle(name='Title', fontSize=16, alignment=1, spaceAfter=10)
         
-        elements.append(Paragraph(f"<b>Nómina Agroavícola del Llano</b>", title_style))
+        # 🆕 Logo y Encabezado
+        logo_path = os.path.join(app.root_path, 'static', 'logo.png')
+        try:
+            logo = Image(logo_path)
+            logo.drawHeight = 1.2*inch
+            logo.drawWidth = 1.2*inch
+            logo_table_data = [[logo, Paragraph(f"<b>Nómina Agroavícola del Llano</b>", title_style)]]
+            logo_table = Table(logo_table_data, colWidths=[1.2*inch, 400])
+            logo_table.setStyle(TableStyle([
+                ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
+                ('ALIGN', (1,0), (1,0), 'RIGHT'),
+                ('BOTTOMPADDING', (0,0), (-1,-1), 10),
+            ]))
+            elements.append(logo_table)
+        except:
+            elements.append(Paragraph(f"<b>Nómina Agroavícola del Llano</b>", title_style))
+            
         elements.append(Paragraph(f"<b>Lote #{lote_row[0]} - {lote_row[1] or 'Sin descripción'}</b><br/><small>Generado el {lote_row[2].strftime('%d/%m/%Y')}</small>", normal_style))
         elements.append(Spacer(1, 10*mm))
         
@@ -814,7 +830,6 @@ def generar_lote_pdf(lote_id):
             total_bs += neto_bs
             data.append([row[7], nombre, row[8] or '', f"${float(row[9]):.2f}" if row[9] else '', f"${neto_usd:.2f}", f"Bs. {neto_bs:.2f}"])
         
-        # 🛠️ CORRECCIÓN: Usar Paragraph para renderizar el HTML en negrita correctamente
         data.append([
             "", "", "", 
             Paragraph("<b>TOTAL GENERAL</b>", normal_style), 
@@ -840,7 +855,7 @@ def generar_lote_pdf(lote_id):
         return jsonify({'error': f'Error interno generando el PDF del lote: {str(e)}'}), 500
 
 # ============================================
-# 📄 CORREGIDO: GENERADOR DE RECIBO PDF INDIVIDUAL (SOLO Bs y Formato Corregido)
+# 📄 CORREGIDO Y ALINEADO: GENERADOR DE RECIBO PDF INDIVIDUAL (Con Logo, Bs y diseño profesional)
 # ============================================
 @app.route('/api/generar_recibo/<int:id_nomina>', methods=['GET'])
 @login_required
@@ -866,12 +881,15 @@ def generar_recibo_pdf(id_nomina):
         cur.close(); conn.close()
         if not row: return jsonify({'error': 'Nómina no encontrada'}), 404
 
-        # Extraer datos
+        # 🛠️ CORRECCIÓN CRUCIAL DE ÍNDICES
         n = row 
-        empleado_nombre = f"{n[24]} {n[25]}" 
-        empleado_cedula = n[26] 
-        cargo = n[27] 
-        salario_mensual_usd = float(n[27]) if n[27] else 0 
+        nombres = n[23] if n[23] else ''
+        apellidos = n[24] if n[24] else ''
+        cedula = n[25] if n[25] else ''
+        cargo = n[26] if n[26] else ''
+        salario_mensual_usd = float(n[27]) if n[27] else 0
+        
+        empleado_nombre = f"{nombres} {apellidos}".strip()
         
         fecha_inicio = n[2].strftime("%d/%m/%Y") if n[2] else ''
         fecha_fin = n[3].strftime("%d/%m/%Y") if n[3] else ''
@@ -899,7 +917,7 @@ def generar_recibo_pdf(id_nomina):
         sso_bs = sso_usd * tasa_bcv
         rpe_bs = rpe_usd * tasa_bcv
         faov_bs = faov_usd * tasa_bcv
-        neto_base_bs = neto_bs - bono_complementario_bs # Cálculo base sin bono
+        neto_base_bs = neto_bs - bono_complementario_bs
         pago_60_bs = (neto_base_bs * 0.60) + bono_complementario_bs if neto_usd > 0 else 0
         pago_40_bs = neto_base_bs * 0.40 if neto_usd > 0 else 0
 
@@ -910,20 +928,35 @@ def generar_recibo_pdf(id_nomina):
         normal_style = ParagraphStyle(name='Normal', fontName='Helvetica', fontSize=9)
         bold_style = ParagraphStyle(name='Bold', parent=normal_style, fontName='Helvetica-Bold', fontSize=9)
         title_style = ParagraphStyle(name='Title', fontSize=14, alignment=1, spaceAfter=10)
+
+        # 🆕 LOGO DE LA EMPRESA
+        logo_path = os.path.join(app.root_path, 'static', 'logo.png')
+        try:
+            logo = Image(logo_path)
+            logo.drawHeight = 1.2*inch
+            logo.drawWidth = 1.2*inch
+            logo_table_data = [[logo, Paragraph(f"<b>{descripcion}</b>", title_style)]]
+            logo_table = Table(logo_table_data, colWidths=[1.2*inch, 400])
+            logo_table.setStyle(TableStyle([
+                ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
+                ('ALIGN', (1,0), (1,0), 'RIGHT'),
+                ('BOTTOMPADDING', (0,0), (-1,-1), 10),
+            ]))
+            elements.append(logo_table)
+        except:
+            # Si no hay logo, solo mostramos el título
+            elements.append(Paragraph(f"<b>{descripcion}</b>", title_style))
         
-        elements.append(Paragraph(f"<b>{descripcion}</b>", title_style))
-        
-        # HEADER CON PARAGRAPH
+        # 🛠️ ENCABEZADO ALINEADO A 2 COLUMNAS (Evita que se desajusten los datos)
         header_data = [
-            [Paragraph("Empleado:", normal_style), Paragraph(f"{empleado_nombre}", normal_style), Paragraph("Cédula:", normal_style), Paragraph(f"{empleado_cedula}", normal_style)],
-            [Paragraph("Cargo:", normal_style), Paragraph(f"{cargo}", normal_style), Paragraph("Período:", normal_style), Paragraph(f"{fecha_inicio} a {fecha_fin}", normal_style)],
-            [Paragraph("Salario Mensual:", normal_style), Paragraph(f"Bs. {salario_mensual_bs:.2f}", normal_style), Paragraph("Tasa BCV:", normal_style), Paragraph(f"Bs. {tasa_bcv:.4f}", normal_style)],
+            [Paragraph(f"<b>Empleado:</b> {empleado_nombre}", normal_style), Paragraph(f"<b>Cédula:</b> {cedula}", normal_style)],
+            [Paragraph(f"<b>Cargo:</b> {cargo}", normal_style), Paragraph(f"<b>Período:</b> {fecha_inicio} a {fecha_fin}", normal_style)],
+            [Paragraph(f"<b>Salario Mensual:</b> Bs. {salario_mensual_bs:.2f}", normal_style), Paragraph(f"<b>Tasa BCV:</b> Bs. {tasa_bcv:.4f}", normal_style)],
         ]
-        header_table = Table(header_data, colWidths=[80, 200, 80, 130])
+        header_table = Table(header_data, colWidths=[250, 250])
         header_table.setStyle(TableStyle([
-            ('FONTNAME', (0,0), (-1,-1), 'Helvetica'),
             ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
-            ('BOTTOMPADDING', (0,0), (-1,-1), 4),
+            ('BOTTOMPADDING', (0,0), (-1,-1), 6),
         ]))
         elements.append(header_table)
         elements.append(Spacer(1, 10*mm))
