@@ -45,7 +45,6 @@ def init_db():
         conn = get_db_connection()
         if not conn: return
         cur = conn.cursor()
-        # Tablas...
         cur.execute('''
             CREATE TABLE IF NOT EXISTS empleados (
                 id_empleado SERIAL PRIMARY KEY, cedula TEXT UNIQUE NOT NULL, nombres TEXT NOT NULL, apellidos TEXT NOT NULL,
@@ -768,7 +767,7 @@ def generar_archivo_pago(lote_id):
         return jsonify({'error': f'Error interno generando el archivo de pago: {str(e)}'}), 500
 
 # ============================================
-# 🆕 GENERADOR DE PDF DEL LOTE COMPLETO (CORREGIDO HTML TAGS)
+# 🆕 GENERADOR DE PDF DEL LOTE COMPLETO (CORREGIDO)
 # ============================================
 @app.route('/api/generar_lote_pdf/<int:lote_id>', methods=['GET'])
 @login_required
@@ -841,7 +840,7 @@ def generar_lote_pdf(lote_id):
         return jsonify({'error': f'Error interno generando el PDF del lote: {str(e)}'}), 500
 
 # ============================================
-# 📄 CORREGIDO: GENERADOR DE RECIBO PDF INDIVIDUAL (Robusto)
+# 📄 CORREGIDO: GENERADOR DE RECIBO PDF INDIVIDUAL (SOLO Bs y Formato Corregido)
 # ============================================
 @app.route('/api/generar_recibo/<int:id_nomina>', methods=['GET'])
 @login_required
@@ -867,22 +866,21 @@ def generar_recibo_pdf(id_nomina):
         cur.close(); conn.close()
         if not row: return jsonify({'error': 'Nómina no encontrada'}), 404
 
-        # Mapeo seguro por índice (0 a 27)
+        # Extraer datos
         n = row 
-        empleado_nombre = f"{n[24]} {n[25]}" # nombres y apellidos
-        empleado_cedula = n[26] # cedula
-        cargo = n[27] # cargo
-        # 🛠️ CORRECCIÓN CRUCIAL: El índice 27 es el salario, no 28.
+        empleado_nombre = f"{n[24]} {n[25]}" 
+        empleado_cedula = n[26] 
+        cargo = n[27] 
         salario_mensual_usd = float(n[27]) if n[27] else 0 
         
         fecha_inicio = n[2].strftime("%d/%m/%Y") if n[2] else ''
         fecha_fin = n[3].strftime("%d/%m/%Y") if n[3] else ''
         tipo = n[4]
-        salario_base = float(n[6]) if n[6] else 0
-        horas_extras = float(n[7]) if n[7] else 0
-        bono_complementario = float(n[8]) if n[8] else 0
-        total_asignaciones = float(n[9]) if n[9] else 0
-        total_deducciones = float(n[10]) if n[10] else 0
+        salario_base_usd = float(n[6]) if n[6] else 0
+        horas_extras_usd = float(n[7]) if n[7] else 0
+        bono_complementario_usd = float(n[8]) if n[8] else 0
+        total_asignaciones_usd = float(n[9]) if n[9] else 0
+        total_deducciones_usd = float(n[10]) if n[10] else 0
         neto_usd = float(n[11]) if n[11] else 0
         neto_bs = float(n[12]) if n[12] else 0
         sso_usd = float(n[15]) if n[15] else 0
@@ -891,66 +889,79 @@ def generar_recibo_pdf(id_nomina):
         tasa_bcv = float(n[13]) if n[13] else 0
         descripcion = n[21] or "Recibo de Nómina"
 
+        # 🛠️ CONVERSIÓN A BOLÍVARES (Bs.)
+        salario_mensual_bs = salario_mensual_usd * tasa_bcv
+        salario_base_bs = salario_base_usd * tasa_bcv
+        horas_extras_bs = horas_extras_usd * tasa_bcv
+        bono_complementario_bs = bono_complementario_usd * tasa_bcv
+        total_asignaciones_bs = total_asignaciones_usd * tasa_bcv
+        total_deducciones_bs = total_deducciones_usd * tasa_bcv
+        sso_bs = sso_usd * tasa_bcv
+        rpe_bs = rpe_usd * tasa_bcv
+        faov_bs = faov_usd * tasa_bcv
+        neto_base_bs = neto_bs - bono_complementario_bs # Cálculo base sin bono
+        pago_60_bs = (neto_base_bs * 0.60) + bono_complementario_bs if neto_usd > 0 else 0
+        pago_40_bs = neto_base_bs * 0.40 if neto_usd > 0 else 0
+
         buffer = BytesIO()
         doc = SimpleDocTemplate(buffer, pagesize=A4, leftMargin=20*mm, rightMargin=20*mm, topMargin=20*mm, bottomMargin=20*mm)
         elements = []
         styles = getSampleStyleSheet()
-        title_style = ParagraphStyle(name='Title', fontSize=16, alignment=1, spaceAfter=10)
+        normal_style = ParagraphStyle(name='Normal', fontName='Helvetica', fontSize=9)
+        bold_style = ParagraphStyle(name='Bold', parent=normal_style, fontName='Helvetica-Bold', fontSize=9)
+        title_style = ParagraphStyle(name='Title', fontSize=14, alignment=1, spaceAfter=10)
         
         elements.append(Paragraph(f"<b>{descripcion}</b>", title_style))
+        
+        # HEADER CON PARAGRAPH
         header_data = [
-            ["Empleado:", f"{empleado_nombre}", "Cédula:", f"{empleado_cedula}"],
-            ["Cargo:", f"{cargo}", "Período:", f"{fecha_inicio} a {fecha_fin}"],
-            ["Salario Mensual:", f"${salario_mensual_usd:.2f}", "Tasa BCV:", f"Bs. {tasa_bcv:.4f}"],
+            [Paragraph("Empleado:", normal_style), Paragraph(f"{empleado_nombre}", normal_style), Paragraph("Cédula:", normal_style), Paragraph(f"{empleado_cedula}", normal_style)],
+            [Paragraph("Cargo:", normal_style), Paragraph(f"{cargo}", normal_style), Paragraph("Período:", normal_style), Paragraph(f"{fecha_inicio} a {fecha_fin}", normal_style)],
+            [Paragraph("Salario Mensual:", normal_style), Paragraph(f"Bs. {salario_mensual_bs:.2f}", normal_style), Paragraph("Tasa BCV:", normal_style), Paragraph(f"Bs. {tasa_bcv:.4f}", normal_style)],
         ]
         header_table = Table(header_data, colWidths=[80, 200, 80, 130])
         header_table.setStyle(TableStyle([
-            ('FONTNAME', (0,0), (-1,-1), 'Helvetica-Bold'),
-            ('FONTNAME', (1,0), (1,-1), 'Helvetica'),
-            ('FONTNAME', (3,0), (3,-1), 'Helvetica'),
-            ('ALIGN', (0,0), (-1,-1), 'LEFT'),
+            ('FONTNAME', (0,0), (-1,-1), 'Helvetica'),
             ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
-            ('BOTTOMPADDING', (0,0), (-1,-1), 6),
+            ('BOTTOMPADDING', (0,0), (-1,-1), 4),
         ]))
         elements.append(header_table)
         elements.append(Spacer(1, 10*mm))
+
+        # TABLA DE CONCEPTOS (Todos en Bs)
         concept_data = [
-            ["Cód.", "Concepto", "Días", "Monto (USD)"],
-            ["1000", "Salario Base del Período", f"{'11' if tipo == 'Quincenal' else '5'}" if tipo else '-', f"${salario_base:.2f}"],
-            ["1004", "Horas Extras", "-", f"${horas_extras:.2f}"],
-            ["1010", "Bono Complementario (*Exento de deducciones)", "-", f"${bono_complementario:.2f}"],
-            ["---", "Total Asignaciones", "", f"<b>${total_asignaciones:.2f}</b>"],
-            ["4900", "Seguro Social Obligatorio (SSO)", "-", f"(${sso_usd:.2f})"],
-            ["4905", "Régimen Prestacional Empleo (RPE)", "-", f"(${rpe_usd:.2f})"],
-            ["4910", "Fondo Ahorro Oblig. (FAOV)", "-", f"(${faov_usd:.2f})"],
-            ["---", "Total Deducciones", "", f"<b>(${total_deducciones:.2f})</b>"],
+            [Paragraph("<b>Cód.</b>", bold_style), Paragraph("<b>Concepto</b>", bold_style), Paragraph("<b>Días</b>", bold_style), Paragraph("<b>Monto (Bs.)</b>", bold_style)],
+            [Paragraph("1000", normal_style), Paragraph("Salario Base del Período", normal_style), Paragraph(f"{'11' if tipo == 'Quincenal' else '5'}" if tipo else '-', normal_style), Paragraph(f"Bs. {salario_base_bs:.2f}", normal_style)],
+            [Paragraph("1004", normal_style), Paragraph("Horas Extras", normal_style), Paragraph("-", normal_style), Paragraph(f"Bs. {horas_extras_bs:.2f}", normal_style)],
+            [Paragraph("1010", normal_style), Paragraph("Bono Complementario (*Exento de deducciones)", normal_style), Paragraph("-", normal_style), Paragraph(f"Bs. {bono_complementario_bs:.2f}", normal_style)],
+            [Paragraph("---", normal_style), Paragraph("Total Asignaciones", normal_style), Paragraph("", normal_style), Paragraph(f"Bs. {total_asignaciones_bs:.2f}", bold_style)],
+            [Paragraph("4900", normal_style), Paragraph("Seguro Social Obligatorio (SSO)", normal_style), Paragraph("-", normal_style), Paragraph(f"(Bs. {sso_bs:.2f})", normal_style)],
+            [Paragraph("4905", normal_style), Paragraph("Régimen Prestacional Empleo (RPE)", normal_style), Paragraph("-", normal_style), Paragraph(f"(Bs. {rpe_bs:.2f})", normal_style)],
+            [Paragraph("4910", normal_style), Paragraph("Fondo Ahorro Oblig. (FAOV)", normal_style), Paragraph("-", normal_style), Paragraph(f"(Bs. {faov_bs:.2f})", normal_style)],
+            [Paragraph("---", normal_style), Paragraph("Total Deducciones", normal_style), Paragraph("", normal_style), Paragraph(f"(Bs. {total_deducciones_bs:.2f})", bold_style)],
         ]
         concept_table = Table(concept_data, colWidths=[50, 220, 60, 120])
         concept_table.setStyle(TableStyle([
             ('BACKGROUND', (0,0), (-1,0), colors.lightblue),
             ('FONTNAME', (0,0), (-1,-1), 'Helvetica'),
-            ('FONTNAME', (3,0), (3,-1), 'Helvetica-Bold'),
             ('ALIGN', (0,0), (0,-1), 'CENTER'),
-            ('ALIGN', (2,0), (2,-1), 'CENTER'),
             ('ALIGN', (3,0), (3,-1), 'RIGHT'),
             ('GRID', (0,0), (-1,-1), 0.5, colors.black),
-            ('BOTTOMPADDING', (0,0), (-1,-1), 8),
-            ('TOPPADDING', (0,0), (-1,-1), 8),
+            ('BOTTOMPADDING', (0,0), (-1,-1), 6),
+            ('TOPPADDING', (0,0), (-1,-1), 6),
         ]))
         elements.append(concept_table)
         elements.append(Spacer(1, 10*mm))
-        neto_base = neto_usd - bono_complementario
-        pago_60_usd = (neto_base * 0.60) + bono_complementario
-        pago_40_usd = neto_base * 0.40
+
+        # PIE DE PÁGINA Y PAGOS EN Bs.
         footer_data = [
-            ["<b>Líquido a Pagar (USD):</b>", f"<b>${neto_usd:.2f}</b>"],
-            ["<b>Líquido a Pagar (Bs):</b>", f"<b>Bs. {neto_bs:.2f}</b>"],
-            ["", ""],
-            ["<b>Pago en Cuenta (60% + Bono 100%):</b>", f"${pago_60_usd:.2f} | Bs. {pago_60_usd * tasa_bcv:.2f}"],
-            ["<b>Pago en Efectivo (40%):</b>", f"${pago_40_usd:.2f} | Bs. {pago_40_usd * tasa_bcv:.2f}"],
-            ["", ""],
-            ["Generado por:", "Sistema de Nómina Agroavícola del Llano"],
-            ["Fecha de Emisión:", datetime.now().strftime("%d/%m/%Y %H:%M")]
+            [Paragraph("<b>Líquido a Pagar (Bs):</b>", normal_style), Paragraph(f"<b>Bs. {neto_bs:.2f}</b>", bold_style)],
+            [Paragraph("", normal_style), Paragraph("", normal_style)],
+            [Paragraph("<b>Pago en Cuenta (60% + Bono 100%):</b>", normal_style), Paragraph(f"Bs. {pago_60_bs:.2f}", normal_style)],
+            [Paragraph("<b>Pago en Efectivo (40%):</b>", normal_style), Paragraph(f"Bs. {pago_40_bs:.2f}", normal_style)],
+            [Paragraph("", normal_style), Paragraph("", normal_style)],
+            [Paragraph("Generado por:", normal_style), Paragraph("Sistema de Nómina Agroavícola del Llano", normal_style)],
+            [Paragraph("Fecha de Emisión:", normal_style), Paragraph(datetime.now().strftime("%d/%m/%Y %H:%M"), normal_style)],
         ]
         footer_table = Table(footer_data, colWidths=[170, 280])
         footer_table.setStyle(TableStyle([
@@ -958,10 +969,9 @@ def generar_recibo_pdf(id_nomina):
             ('ALIGN', (0,0), (0,-1), 'LEFT'),
             ('ALIGN', (1,0), (1,-1), 'RIGHT'),
             ('BOTTOMPADDING', (0,0), (-1,-1), 5),
-            ('FONTNAME', (0,0), (1,1), 'Helvetica-Bold'),
-            ('FONTSIZE', (0,0), (1,1), 12),
         ]))
         elements.append(footer_table)
+
         doc.build(elements)
         buffer.seek(0)
         return send_file(buffer, as_attachment=True, download_name=f"recibo_{id_nomina}.pdf", mimetype='application/pdf')
