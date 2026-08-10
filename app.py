@@ -14,20 +14,23 @@ from reportlab.lib import colors
 
 app = Flask(__name__)
 
+# 🛡️ CONFIGURACIÓN DE SEGURIDAD Y SESIÓN
 app.config.update(
     SECRET_KEY=os.getenv('SECRET_KEY', 'clave_super_secreta_para_nomina_2026'),
     SESSION_COOKIE_HTTPONLY=True,
     SESSION_COOKIE_SAMESITE='None',
     SESSION_COOKIE_SECURE=True,
-    PERMANENT_SESSION_LIFETIME=timedelta(hours=8)
+    PERMANENT_SESSION_LIFETIME=timedelta(hours=8),
+    SESSION_COOKIE_NAME='nomina_session'
 )
 
+# 🔽 CONFIGURACIÓN CORS EXPLÍCITA
 frontend_urls = [
     "https://nomina-frontend.onrender.com",
     "http://localhost:5000",
     "http://127.0.0.1:5000"
 ]
-CORS(app, origins=frontend_urls, supports_credentials=True)
+CORS(app, origins=frontend_urls, supports_credentials=True, allow_headers=["Content-Type", "Authorization"])
 
 def get_db_connection():
     database_url = 'postgresql://nomina_db_naiu_user:58sgnjVGnVRtLVbOVqYiA7d41VXwsHUH@dpg-d9prbrr9ik0c73ci4e0g-a.oregon-postgres.render.com/nomina_db_naiu'
@@ -38,6 +41,7 @@ def get_db_connection():
         print(f"❌ Error conectando a la BD: {e}")
         return None
 
+# 🛠️ FUNCIÓN DE INICIALIZACIÓN CORREGIDA (Arregla la tabla automáticamente)
 def init_db():
     try:
         conn = get_db_connection()
@@ -88,33 +92,38 @@ def init_db():
         
         cur.execute('''
             CREATE TABLE IF NOT EXISTS parametros (
-                id SERIAL PRIMARY KEY, clave TEXT UNIQUE NOT NULL, valor REAL NOT NULL, fecha_actualizacion DATE
+                id SERIAL PRIMARY KEY, clave TEXT UNIQUE NOT NULL, valor TEXT NOT NULL, fecha_actualizacion DATE
             )
         ''')
-        # Parámetros de la nómina
-        cur.execute("SELECT * FROM parametros WHERE clave = 'tasa_bcv'")
-        if not cur.fetchone(): cur.execute("INSERT INTO parametros (clave, valor) VALUES ('tasa_bcv', 755.1552)")
-        cur.execute("SELECT * FROM parametros WHERE clave = 'cestaticket_usd'")
-        if not cur.fetchone(): cur.execute("INSERT INTO parametros (clave, valor) VALUES ('cestaticket_usd', 40.0)")
-        cur.execute("SELECT * FROM parametros WHERE clave = 'porcentaje_ivss'")
-        if not cur.fetchone(): cur.execute("INSERT INTO parametros (clave, valor) VALUES ('porcentaje_ivss', 0.04)")
-        cur.execute("SELECT * FROM parametros WHERE clave = 'porcentaje_rpe'")
-        if not cur.fetchone(): cur.execute("INSERT INTO parametros (clave, valor) VALUES ('porcentaje_rpe', 0.005)")
-        cur.execute("SELECT * FROM parametros WHERE clave = 'porcentaje_faov'")
-        if not cur.fetchone(): cur.execute("INSERT INTO parametros (clave, valor) VALUES ('porcentaje_faov', 0.01)")
-
-        # 🆕 PARÁMETROS DE LA EMPRESA PARA ARCHIVO TXT BANCARIO
-        cur.execute("SELECT * FROM parametros WHERE clave = 'rif_empresa'")
-        if not cur.fetchone(): cur.execute("INSERT INTO parametros (clave, valor) VALUES ('rif_empresa', 'J409876136')")
-        cur.execute("SELECT * FROM parametros WHERE clave = 'cuenta_empresa'")
-        if not cur.fetchone(): cur.execute("INSERT INTO parametros (clave, valor) VALUES ('cuenta_empresa', '000102034732')")
-        cur.execute("SELECT * FROM parametros WHERE clave = 'nombre_cuenta_empresa'")
-        if not cur.fetchone(): cur.execute("INSERT INTO parametros (clave, valor) VALUES ('nombre_cuenta_empresa', 'CODIZULCA')")
-        cur.execute("SELECT * FROM parametros WHERE clave = 'codigo_banco_defecto'")
-        if not cur.fetchone(): cur.execute("INSERT INTO parametros (clave, valor) VALUES ('codigo_banco_defecto', 'BSCHVECA')")
         
+        # 🧠 Código que arregla la columna 'valor' para que acepte letras
+        cur.execute("""
+            DO $$
+            BEGIN
+                IF EXISTS (SELECT 1 FROM information_schema.columns 
+                           WHERE table_name='parametros' AND column_name='valor' AND data_type='real') THEN
+                    ALTER TABLE parametros ALTER COLUMN valor TYPE TEXT;
+                END IF;
+            END $$;
+        """)
+
+        # Insertar todos los parámetros por defecto (Nómina y Empresa)
+        parametros_default = [
+            ('tasa_bcv', '755.1552'),
+            ('cestaticket_usd', '40.0'),
+            ('porcentaje_ivss', '0.04'),
+            ('porcentaje_rpe', '0.005'),
+            ('porcentaje_faov', '0.01'),
+            ('rif_empresa', 'J409876136'),
+            ('cuenta_empresa', '000102034732'),
+            ('nombre_cuenta_empresa', 'CODIZULCA'),
+            ('codigo_banco_defecto', 'BSCHVECA')
+        ]
+        for clave, valor in parametros_default:
+            cur.execute("INSERT INTO parametros (clave, valor) VALUES (%s, %s) ON CONFLICT (clave) DO UPDATE SET valor = EXCLUDED.valor", (clave, valor))
+
         conn.commit(); cur.close(); conn.close()
-        print("✅ Base de datos inicializada correctamente")
+        print("✅ Base de datos inicializada y parámetros de empresa corregidos automáticamente.")
     except Exception as e:
         print(f"❌ ERROR GRAVE EN init_db: {e}")
 
@@ -218,7 +227,7 @@ def cambiar_password():
         cur.close(); conn.close()
 
 # ============================================
-# ENDPOINTS DE NÓMINA
+# ENDPOINTS DE NÓMINA (EMPLEADOS, SUCURSALES, PARÁMETROS)
 # ============================================
 @app.route('/api/empleados', methods=['GET'])
 @login_required
@@ -315,7 +324,7 @@ def get_parametros():
     cur = conn.cursor()
     cur.execute("SELECT clave, valor FROM parametros")
     rows = cur.fetchall(); cur.close(); conn.close()
-    return jsonify({row[0]: float(row[1]) for row in rows})
+    return jsonify({row[0]: float(row[1]) if row[1].replace('.','',1).isdigit() else row[1] for row in rows})
 
 @app.route('/api/parametros', methods=['PUT'])
 @login_required
@@ -328,7 +337,7 @@ def actualizar_parametro():
     if not conn: return jsonify({'error': 'Error de conexión'}), 500
     cur = conn.cursor()
     try:
-        cur.execute("UPDATE parametros SET valor = %s, fecha_actualizacion = CURRENT_DATE WHERE clave = %s", (valor, clave))
+        cur.execute("UPDATE parametros SET valor = %s, fecha_actualizacion = CURRENT_DATE WHERE clave = %s", (str(valor), clave))
         conn.commit()
         return jsonify({'mensaje': f'Parámetro "{clave}" actualizado exitosamente'})
     except Exception as e: return jsonify({'error': str(e)}), 400
@@ -564,7 +573,7 @@ def get_lote_detalle(id):
         return jsonify({'error': f'Error interno del servidor: {str(e)}'}), 500
 
 # ============================================
-# 🆕 GENERADOR DE ARCHIVO TXT PARA EL BANCO (CON FORMATO DE ANCHO FIJO)
+# 🏦 GENERADOR DE ARCHIVO TXT PARA EL BANCO (CON FORMATO DE ANCHO FIJO)
 # ============================================
 @app.route('/api/generar_archivo_pago/<int:lote_id>', methods=['GET'])
 @login_required
@@ -619,7 +628,6 @@ def generar_archivo_pago(lote_id):
         total_count = len(rows)
 
         # 1️⃣ HEADER (Cabecera del archivo)
-        # Formato: HEADER(8) + total_count(8) + 0011853(7) + rif(10) + fecha(10) + fecha(10)
         header_line = f"HEADER  {total_count:08d}0011853{rif_empresa:<10}{fecha_ejecucion}{fecha_ejecucion}"
         buffer.write(header_line + "\n")
 
@@ -631,14 +639,11 @@ def generar_archivo_pago(lote_id):
             monto = float(row[4]) if row[4] else 0.0
             total_amount += monto
             
-            # Formatear monto: 16 dígitos con 2 decimales y coma, ej: 0000000000055270,04
             monto_str = f"{monto:016.2f}".replace('.', ',')
 
-            # 🔴 Línea DEBITO (Ancho fijo de 116 caracteres)
             debit_line = (f"DEBITO  {i:08d}{rif_empresa:<10}{nombre_cuenta_empresa:<30}"
                           f"{fecha_ejecucion}{cuenta_empresa:<12}00000487092{monto_str:<21}VEB40 ")
 
-            # 🟢 Línea CREDITO (Ancho fijo de 108 caracteres)
             credit_line = (f"CREDITO {i:08d}{cedula:<10}{nombre:<29}"
                            f"{cuenta_empleado:<22}{monto_str:<21}00{codigo_banco:<8}")
 
@@ -646,7 +651,6 @@ def generar_archivo_pago(lote_id):
             buffer.write(credit_line + "\n")
 
         # 3️⃣ TOTAL (Pie del archivo)
-        # Formato: TOTAL(8) + total_count(5) + total_count(5) + total_amount_str(18)
         total_amount_str = f"{total_amount:015.2f}".replace('.', ',')
         total_line = f"TOTAL   {total_count:05d}{total_count:05d}{total_amount_str:<18}"
         buffer.write(total_line + "\n")
@@ -686,7 +690,7 @@ def eliminar_lote(id):
         cur.close(); conn.close()
 
 # ============================================
-# ENDPOINT: GENERADOR DE RECIBO PDF 
+# 📄 ENDPOINT: GENERADOR DE RECIBO PDF 
 # ============================================
 @app.route('/api/generar_recibo/<int:id_nomina>', methods=['GET'])
 @login_required
