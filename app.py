@@ -1,5 +1,6 @@
 import os
 import psycopg2
+import requests
 from flask import Flask, request, jsonify, session, send_file
 from flask_cors import CORS
 from datetime import datetime, timedelta
@@ -14,7 +15,6 @@ from reportlab.lib import colors
 
 app = Flask(__name__)
 
-# 🛡️ CONFIGURACIÓN DE SEGURIDAD Y SESIÓN
 app.config.update(
     SECRET_KEY=os.getenv('SECRET_KEY', 'clave_super_secreta_para_nomina_2026'),
     SESSION_COOKIE_HTTPONLY=True,
@@ -24,7 +24,6 @@ app.config.update(
     SESSION_COOKIE_NAME='nomina_session'
 )
 
-# 🔽 CONFIGURACIÓN CORS EXPLÍCITA
 frontend_urls = [
     "https://nomina-frontend.onrender.com",
     "http://localhost:5000",
@@ -41,13 +40,11 @@ def get_db_connection():
         print(f"❌ Error conectando a la BD: {e}")
         return None
 
-# 🛠️ FUNCIÓN DE INICIALIZACIÓN CORREGIDA (Arregla la tabla automáticamente)
 def init_db():
     try:
         conn = get_db_connection()
         if not conn: return
         cur = conn.cursor()
-        # Crear tablas
         cur.execute('''
             CREATE TABLE IF NOT EXISTS empleados (
                 id_empleado SERIAL PRIMARY KEY, cedula TEXT UNIQUE NOT NULL, nombres TEXT NOT NULL, apellidos TEXT NOT NULL,
@@ -96,7 +93,6 @@ def init_db():
             )
         ''')
         
-        # 🧠 Código que arregla la columna 'valor' para que acepte letras
         cur.execute("""
             DO $$
             BEGIN
@@ -107,7 +103,6 @@ def init_db():
             END $$;
         """)
 
-        # Insertar todos los parámetros por defecto (Nómina y Empresa)
         parametros_default = [
             ('tasa_bcv', '755.1552'),
             ('cestaticket_usd', '40.0'),
@@ -227,7 +222,7 @@ def cambiar_password():
         cur.close(); conn.close()
 
 # ============================================
-# ENDPOINTS DE NÓMINA (EMPLEADOS, SUCURSALES, PARÁMETROS)
+# ENDPOINTS DE NÓMINA
 # ============================================
 @app.route('/api/empleados', methods=['GET'])
 @login_required
@@ -268,6 +263,28 @@ def crear_empleado():
         conn.commit(); return jsonify({'mensaje': 'Empleado creado exitosamente'})
     except Exception as e: return jsonify({'error': str(e)}), 400
     finally: cur.close(); conn.close()
+
+@app.route('/api/empleados/<int:id>', methods=['PUT'])
+@login_required
+def actualizar_empleado(id):
+    data = request.json
+    conn = get_db_connection()
+    if not conn: return jsonify({'error': 'Error de conexión'}), 500
+    cur = conn.cursor()
+    try:
+        cur.execute('''
+            UPDATE empleados SET 
+                cedula=%s, nombres=%s, apellidos=%s, fecha_nacimiento=%s, fecha_ingreso=%s, 
+                cargo=%s, departamento=%s, sucursal_id=%s, salario_mensual_usd=%s, 
+                tipo_pago=%s, email=%s, telefono=%s, direccion=%s, cuenta_bancaria=%s
+            WHERE id_empleado=%s
+        ''', (data['cedula'], data['nombres'], data['apellidos'], data['fecha_nacimiento'], data['fecha_ingreso'], data['cargo'], data['departamento'], data['sucursal_id'], data['salario_mensual_usd'], data['tipo_pago'], data.get('email'), data.get('telefono'), data.get('direccion'), data.get('cuenta_bancaria'), id))
+        conn.commit()
+        return jsonify({'mensaje': 'Empleado actualizado exitosamente'})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 400
+    finally:
+        cur.close(); conn.close()
 
 @app.route('/api/empleados/<int:id>', methods=['DELETE'])
 @login_required
@@ -343,6 +360,27 @@ def actualizar_parametro():
     except Exception as e: return jsonify({'error': str(e)}), 400
     finally: cur.close(); conn.close()
 
+# 🆕 ENDPOINT: ACTUALIZAR TASA BCV AUTOMÁTICAMENTE
+@app.route('/api/actualizar_bcv', methods=['GET'])
+@login_required
+def actualizar_bcv():
+    try:
+        response = requests.get("https://ve.dolarapi.com/v1/dolares/oficial", timeout=10)
+        if response.status_code == 200:
+            data = response.json()
+            new_rate = float(data['promedio'])
+            conn = get_db_connection()
+            if conn:
+                cur = conn.cursor()
+                cur.execute("UPDATE parametros SET valor = %s, fecha_actualizacion = CURRENT_DATE WHERE clave = 'tasa_bcv'", (str(new_rate),))
+                conn.commit()
+                cur.close()
+                conn.close()
+                return jsonify({'tasa': new_rate, 'mensaje': 'Tasa BCV actualizada exitosamente'})
+        return jsonify({'error': 'No se pudo obtener la tasa de la API externa'}), 500
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
 # ============================================
 # CÁLCULO DE NÓMINA Y PASIVOS
 # ============================================
@@ -378,12 +416,10 @@ def calcular_nomina():
         horas_data = horas_extras_dict.get(cedula, {})
         horas, valor_hora = horas_data.get('horas', 0), horas_data.get('valor_hora', 0)
         bono = bonos_dict.get(cedula, 0)
-        
         salario_mensual = float(emp[9]) if emp[9] else 0
         salario_diario_full = salario_mensual / 30
         salario_diario_incidencia = salario_mensual * 0.60 / 30
         total_horas_extras = horas * valor_hora
-        
         if tipo == 'Quincenal':
             salario_base_full = salario_mensual / 2
             base_incidencia_periodo = salario_mensual * 0.60 / 2
@@ -396,9 +432,7 @@ def calcular_nomina():
             salario_base_full = salario_diario_full * 7
             base_incidencia_periodo = salario_diario_incidencia * 7
             total_asignaciones_base = salario_base_full - (faltas * salario_diario_full) + total_horas_extras
-            
         dias_reales_trabajados = max(0, dias_teoricos_trabajo - faltas)
-        
         if aplicar_deducciones:
             ivss = total_asignaciones_base * 0.04
             rpe = total_asignaciones_base * 0.005
@@ -406,20 +440,16 @@ def calcular_nomina():
             total_deducciones = ivss + rpe + faov
         else:
             ivss, rpe, faov, total_deducciones = 0.0, 0.0, 0.0, 0.0
-            
         neto_base_usd = total_asignaciones_base - total_deducciones
         total_neto_usd = neto_base_usd + bono
-        
         if split_60_40:
             pago_60_usd = (neto_base_usd * 0.60) + bono
             pago_40_usd = neto_base_usd * 0.40
         else:
             pago_60_usd = total_neto_usd
             pago_40_usd = 0.0
-
         total_usd_lote += total_neto_usd
         total_bs_lote += total_neto_usd * tasa_bcv
-
         calculo = {
             'salario_base_full_usd': salario_base_full,
             'base_incidencia_60_usd': base_incidencia_periodo,
@@ -573,7 +603,7 @@ def get_lote_detalle(id):
         return jsonify({'error': f'Error interno del servidor: {str(e)}'}), 500
 
 # ============================================
-# 🏦 GENERADOR DE ARCHIVO TXT PARA EL BANCO (CON FORMATO DE ANCHO FIJO)
+# 🏦 GENERADOR DE ARCHIVO TXT PARA EL BANCO
 # ============================================
 @app.route('/api/generar_archivo_pago/<int:lote_id>', methods=['GET'])
 @login_required
@@ -582,25 +612,18 @@ def generar_archivo_pago(lote_id):
         conn = get_db_connection()
         if not conn: return jsonify({'error': 'Error de conexión'}), 500
         cur = conn.cursor()
-
-        # 🔽 Obtener datos de la empresa desde parametros
         cur.execute("SELECT valor FROM parametros WHERE clave = 'rif_empresa'")
         row = cur.fetchone()
         rif_empresa = str(row[0]) if row else "J409876136"
-        
         cur.execute("SELECT valor FROM parametros WHERE clave = 'cuenta_empresa'")
         row = cur.fetchone()
         cuenta_empresa = str(row[0]) if row else "000102034732"
-        
         cur.execute("SELECT valor FROM parametros WHERE clave = 'nombre_cuenta_empresa'")
         row = cur.fetchone()
         nombre_cuenta_empresa = str(row[0]) if row else "CODIZULCA"
-
         cur.execute("SELECT valor FROM parametros WHERE clave = 'codigo_banco_defecto'")
         row = cur.fetchone()
         codigo_banco = str(row[0]) if row else "BSCHVECA"
-
-        # 🔽 Obtener los empleados y el monto en Bs (del 60%)
         cur.execute('''
             SELECT 
                 e.cedula, 
@@ -614,83 +637,117 @@ def generar_archivo_pago(lote_id):
               AND e.cuenta_bancaria IS NOT NULL 
               AND e.cuenta_bancaria != ''
         ''', (lote_id,))
-        
         rows = cur.fetchall()
-        cur.close()
-        conn.close()
-
-        if not rows:
-            return jsonify({'error': 'No hay empleados con cuentas bancarias registradas en este lote.'}), 404
-
+        cur.close(); conn.close()
+        if not rows: return jsonify({'error': 'No hay empleados con cuentas bancarias registradas en este lote.'}), 404
         fecha_ejecucion = datetime.now().strftime("%d/%m/%Y")
         total_amount = 0.0
         buffer = StringIO()
         total_count = len(rows)
-
-        # 1️⃣ HEADER (Cabecera del archivo)
         header_line = f"HEADER  {total_count:08d}0011853{rif_empresa:<10}{fecha_ejecucion}{fecha_ejecucion}"
         buffer.write(header_line + "\n")
-
-        # 2️⃣ DEBITOS & CREDITOS (Por cada empleado)
         for i, row in enumerate(rows, 1):
             cedula = str(row[0]) if row[0] else ''
             cuenta_empleado = str(row[1]) if row[1] else ''
             nombre = f"{row[2]} {row[3]}" if row[2] and row[3] else row[2] or row[3] or ''
             monto = float(row[4]) if row[4] else 0.0
             total_amount += monto
-            
             monto_str = f"{monto:016.2f}".replace('.', ',')
-
             debit_line = (f"DEBITO  {i:08d}{rif_empresa:<10}{nombre_cuenta_empresa:<30}"
                           f"{fecha_ejecucion}{cuenta_empresa:<12}00000487092{monto_str:<21}VEB40 ")
-
             credit_line = (f"CREDITO {i:08d}{cedula:<10}{nombre:<29}"
                            f"{cuenta_empleado:<22}{monto_str:<21}00{codigo_banco:<8}")
-
             buffer.write(debit_line + "\n")
             buffer.write(credit_line + "\n")
-
-        # 3️⃣ TOTAL (Pie del archivo)
         total_amount_str = f"{total_amount:015.2f}".replace('.', ',')
         total_line = f"TOTAL   {total_count:05d}{total_count:05d}{total_amount_str:<18}"
         buffer.write(total_line + "\n")
-
-        # 🔽 Codificar en CP-1252 (Estándar bancario en Venezuela para tildes y caracteres)
         mem = BytesIO()
         mem.write(buffer.getvalue().encode('cp1252'))
         mem.seek(0)
         buffer.close()
-
         return send_file(
             mem,
             as_attachment=True,
             download_name=f"PROV_{datetime.now().strftime('%Y%m%d')}.txt",
             mimetype='text/plain'
         )
-
     except Exception as e:
         print(f"❌ Error generando archivo bancario: {e}")
         return jsonify({'error': f'Error interno generando el archivo de pago: {str(e)}'}), 500
 
-@app.route('/api/lotes/<int:id>', methods=['DELETE'])
+# ============================================
+# 🆕 GENERADOR DE PDF DEL LOTE COMPLETO (Para el Historial)
+# ============================================
+@app.route('/api/generar_lote_pdf/<int:lote_id>', methods=['GET'])
 @login_required
-def eliminar_lote(id):
-    conn = get_db_connection()
-    if not conn: return jsonify({'error': 'Error de conexión'}), 500
-    cur = conn.cursor()
+def generar_lote_pdf(lote_id):
     try:
-        cur.execute("DELETE FROM nominas WHERE lote_id = %s", (id,))
-        cur.execute("DELETE FROM lotes_nomina WHERE id_lote = %s", (id,))
-        conn.commit()
-        return jsonify({'mensaje': 'Lote eliminado exitosamente'})
-    except Exception as e:
-        conn.rollback()
-        return jsonify({'error': str(e)}), 400
-    finally:
+        conn = get_db_connection()
+        if not conn: return jsonify({'error': 'Error de conexión'}), 500
+        cur = conn.cursor()
+        cur.execute("SELECT * FROM lotes_nomina WHERE id_lote = %s", (id,))
+        lote_row = cur.fetchone()
+        if not lote_row: return jsonify({'error': 'Lote no encontrado'}), 404
+        cur.execute('''
+            SELECT 
+                n.id_nomina, n.neto_pagar_usd, n.neto_pagar_bs, n.descripcion, n.tipo,
+                e.nombres, e.apellidos, e.cedula, e.cargo, e.salario_mensual_usd
+            FROM nominas n
+            JOIN empleados e ON n.id_empleado = e.id_empleado
+            WHERE n.lote_id = %s
+            ORDER BY e.nombres
+        ''', (lote_id,))
+        nominas_rows = cur.fetchall()
         cur.close(); conn.close()
 
+        buffer = BytesIO()
+        doc = SimpleDocTemplate(buffer, pagesize=A4, leftMargin=20*mm, rightMargin=20*mm, topMargin=20*mm, bottomMargin=20*mm)
+        elements = []
+        styles = getSampleStyleSheet()
+
+        title_style = ParagraphStyle(name='Title', fontSize=16, alignment=1, spaceAfter=10)
+        
+        # Encabezado
+        elements.append(Paragraph(f"<b>Nómina Agroavícola del Llano</b>", title_style))
+        elements.append(Paragraph(f"<b>Lote #{lote_row[0]} - {lote_row[1] or 'Sin descripción'}</b><br/><small>Generado el {lote_row[2].strftime('%d/%m/%Y')}</small>", styles['Normal']))
+        elements.append(Spacer(1, 10*mm))
+
+        # Tabla de empleados
+        data = [["Cédula", "Empleado", "Cargo", "Salario Mensual", "Neto USD", "Neto Bs"]]
+        total_usd = 0.0
+        total_bs = 0.0
+        for row in nominas_rows:
+            nombre = f"{row[5]} {row[6]}"
+            neto_usd = float(row[1]) if row[1] else 0
+            neto_bs = float(row[2]) if row[2] else 0
+            total_usd += neto_usd
+            total_bs += neto_bs
+            data.append([row[7], nombre, row[8] or '', f"${float(row[9]):.2f}" if row[9] else '', f"${neto_usd:.2f}", f"Bs. {neto_bs:.2f}"])
+        
+        # Fila de totales
+        data.append(["", "", "", "<b>TOTAL GENERAL</b>", f"<b>${total_usd:.2f}</b>", f"<b>Bs. {total_bs:.2f}</b>"])
+
+        table = Table(data, colWidths=[80, 130, 120, 100, 80, 80])
+        table.setStyle(TableStyle([
+            ('BACKGROUND', (0,0), (-1,0), colors.lightblue),
+            ('FONTNAME', (0,0), (-1,-1), 'Helvetica'),
+            ('ALIGN', (0,0), (-1,-1), 'CENTER'),
+            ('GRID', (0,0), (-1,-1), 0.5, colors.black),
+            ('FONTNAME', (0,-1), (-1,-1), 'Helvetica-Bold'),
+        ]))
+        elements.append(table)
+        
+        doc.build(elements)
+        buffer.seek(0)
+        return send_file(buffer, as_attachment=True, download_name=f"lote_{lote_id}.pdf", mimetype='application/pdf')
+
+    except Exception as e:
+        print(f"❌ Error generando PDF del lote: {e}")
+        return jsonify({'error': f'Error interno generando el PDF del lote: {str(e)}'}), 500
+
 # ============================================
-# 📄 ENDPOINT: GENERADOR DE RECIBO PDF 
+# 📄 ENDPOINT: GENERADOR DE RECIBO PDF INDIVIDUAL
 # ============================================
 @app.route('/api/generar_recibo/<int:id_nomina>', methods=['GET'])
 @login_required
@@ -707,13 +764,11 @@ def generar_recibo_pdf(id_nomina):
     row = cur.fetchone()
     cur.close(); conn.close()
     if not row: return jsonify({'error': 'Nómina no encontrada'}), 404
-
     n = row
     empleado_nombre = f"{n[23]} {n[24]}"
     empleado_cedula = n[25]
     cargo = n[26]
     salario_mensual_usd = float(n[27]) if n[27] else 0
-    
     fecha_inicio = n[2].strftime("%d/%m/%Y") if n[2] else ''
     fecha_fin = n[3].strftime("%d/%m/%Y") if n[3] else ''
     tipo = n[4]
@@ -729,18 +784,12 @@ def generar_recibo_pdf(id_nomina):
     faov_usd = float(n[17]) if n[17] else 0
     tasa_bcv = float(n[13]) if n[13] else 0
     descripcion = n[21] or "Recibo de Nómina"
-
     buffer = BytesIO()
     doc = SimpleDocTemplate(buffer, pagesize=A4, leftMargin=20*mm, rightMargin=20*mm, topMargin=20*mm, bottomMargin=20*mm)
     elements = []
     styles = getSampleStyleSheet()
-    
     title_style = ParagraphStyle(name='Title', fontSize=16, alignment=1, spaceAfter=10)
-    bold_style = ParagraphStyle(name='Bold', fontSize=10, fontName='Helvetica-Bold')
-    normal_style = ParagraphStyle(name='Normal', fontSize=10, fontName='Helvetica')
-
     elements.append(Paragraph(f"<b>{descripcion}</b>", title_style))
-    
     header_data = [
         ["Empleado:", f"{empleado_nombre}", "Cédula:", f"{empleado_cedula}"],
         ["Cargo:", f"{cargo}", "Período:", f"{fecha_inicio} a {fecha_fin}"],
@@ -757,7 +806,6 @@ def generar_recibo_pdf(id_nomina):
     ]))
     elements.append(header_table)
     elements.append(Spacer(1, 10*mm))
-
     concept_data = [
         ["Cód.", "Concepto", "Días", "Monto (USD)"],
         ["1000", "Salario Base del Período", f"{'11' if tipo == 'Quincenal' else '5'}", f"${salario_base:.2f}"],
@@ -783,11 +831,9 @@ def generar_recibo_pdf(id_nomina):
     ]))
     elements.append(concept_table)
     elements.append(Spacer(1, 10*mm))
-
     neto_base = neto_usd - bono_complementario
     pago_60_usd = (neto_base * 0.60) + bono_complementario
     pago_40_usd = neto_base * 0.40
-
     footer_data = [
         ["<b>Líquido a Pagar (USD):</b>", f"<b>${neto_usd:.2f}</b>"],
         ["<b>Líquido a Pagar (Bs):</b>", f"<b>Bs. {neto_bs:.2f}</b>"],
@@ -808,11 +854,26 @@ def generar_recibo_pdf(id_nomina):
         ('FONTSIZE', (0,0), (1,1), 12),
     ]))
     elements.append(footer_table)
-
     doc.build(elements)
     buffer.seek(0)
-    
     return send_file(buffer, as_attachment=True, download_name=f"recibo_{id_nomina}.pdf", mimetype='application/pdf')
+
+@app.route('/api/lotes/<int:id>', methods=['DELETE'])
+@login_required
+def eliminar_lote(id):
+    conn = get_db_connection()
+    if not conn: return jsonify({'error': 'Error de conexión'}), 500
+    cur = conn.cursor()
+    try:
+        cur.execute("DELETE FROM nominas WHERE lote_id = %s", (id,))
+        cur.execute("DELETE FROM lotes_nomina WHERE id_lote = %s", (id,))
+        conn.commit()
+        return jsonify({'mensaje': 'Lote eliminado exitosamente'})
+    except Exception as e:
+        conn.rollback()
+        return jsonify({'error': str(e)}), 400
+    finally:
+        cur.close(); conn.close()
 
 with app.app_context(): init_db()
 if __name__ == '__main__':
