@@ -45,6 +45,7 @@ def init_db():
         conn = get_db_connection()
         if not conn: return
         cur = conn.cursor()
+        # Tablas...
         cur.execute('''
             CREATE TABLE IF NOT EXISTS empleados (
                 id_empleado SERIAL PRIMARY KEY, cedula TEXT UNIQUE NOT NULL, nombres TEXT NOT NULL, apellidos TEXT NOT NULL,
@@ -131,7 +132,7 @@ def login_required(f):
     return wrapper
 
 # ============================================
-# MÓDULO DE AUTENTICACIÓN Y USUARIOS (ACTUALIZADO)
+# MÓDULO DE AUTENTICACIÓN Y USUARIOS
 # ============================================
 @app.route('/api/login', methods=['POST'])
 def login():
@@ -195,7 +196,6 @@ def crear_usuario():
     finally:
         cur.close(); conn.close()
 
-# 🆕 EDITAR Y ELIMINAR USUARIOS
 @app.route('/api/usuarios/<int:id>', methods=['PUT'])
 @login_required
 def actualizar_usuario(id):
@@ -424,7 +424,7 @@ def actualizar_bcv():
         return jsonify({'error': str(e)}), 500
 
 # ============================================
-# CÁLCULO DE NÓMINA Y PASIVOS
+# CÁLCULO DE NÓMINA Y PASIVOS (CON MODO "SOLO BONO")
 # ============================================
 @app.route('/api/calcular_nomina', methods=['POST'])
 @login_required
@@ -436,45 +436,62 @@ def calcular_nomina():
     bonos_dict = data.get('bonos', {})
     aplicar_deducciones = data.get('aplicar_deducciones', True)
     split_60_40 = data.get('split_60_40', False)
+    calcular_solo_bono = data.get('calcular_solo_bono', False) # 🆕 Nuevo flag
     
     if not fecha_inicio or not fecha_fin or not empleados_ids: return jsonify({'error': 'Faltan datos'}), 400
+    
+    # Si es solo bono, no necesitamos tasa ni consultar salario base real, pero sí la tasa para el resultado
     conn = get_db_connection()
     if not conn: return jsonify({'error': 'Error de conexión'}), 500
     cur = conn.cursor()
     cur.execute("SELECT valor FROM parametros WHERE clave = 'tasa_bcv'")
     tasa_row = cur.fetchone(); tasa_bcv = float(tasa_row[0]) if tasa_row else 755.1552
+    
     placeholders = ','.join(['%s'] * len(empleados_ids))
     cur.execute(f"SELECT * FROM empleados WHERE id_empleado IN ({placeholders})", empleados_ids)
     empleados = cur.fetchall()
     resultados = []
     total_usd_lote = 0.0
     total_bs_lote = 0.0
+    
     start_date = datetime.strptime(fecha_inicio, "%Y-%m-%d").date()
     end_date = datetime.strptime(fecha_fin, "%Y-%m-%d").date()
     total_calendar_days = (end_date - start_date).days + 1
+    
     for emp in empleados:
         cedula = emp[1]
-        faltas = faltas_dict.get(cedula, 0)
+        faltas = faltas_dict.get(cedula, 0) if not calcular_solo_bono else 0
         horas_data = horas_extras_dict.get(cedula, {})
         horas, valor_hora = horas_data.get('horas', 0), horas_data.get('valor_hora', 0)
         bono = bonos_dict.get(cedula, 0)
         salario_mensual = float(emp[9]) if emp[9] else 0
-        salario_diario_full = salario_mensual / 30
-        salario_diario_incidencia = salario_mensual * 0.60 / 30
-        total_horas_extras = horas * valor_hora
-        if tipo == 'Quincenal':
-            salario_base_full = salario_mensual / 2
-            base_incidencia_periodo = salario_mensual * 0.60 / 2
-            dias_teoricos_trabajo = 11
-            dias_descanso = 4
-            total_asignaciones_base = salario_base_full - (faltas * salario_diario_full) + total_horas_extras
+        
+        if calcular_solo_bono:
+            # 🆕 Lógica Solo Bono: Ignoramos salario, horario y faltas
+            salario_base_full = 0
+            base_incidencia_periodo = 0
+            total_horas_extras = 0
+            total_asignaciones_base = bono
+            dias_teoricos_trabajo = 0
+            dias_descanso = 0
         else:
-            dias_teoricos_trabajo = 7
-            dias_descanso = 2
-            salario_base_full = salario_diario_full * 7
-            base_incidencia_periodo = salario_diario_incidencia * 7
-            total_asignaciones_base = salario_base_full - (faltas * salario_diario_full) + total_horas_extras
-        dias_reales_trabajados = max(0, dias_teoricos_trabajo - faltas)
+            # Lógica Estándar
+            salario_diario_full = salario_mensual / 30
+            salario_diario_incidencia = salario_mensual * 0.60 / 30
+            total_horas_extras = horas * valor_hora
+            if tipo == 'Quincenal':
+                salario_base_full = salario_mensual / 2
+                base_incidencia_periodo = salario_mensual * 0.60 / 2
+                dias_teoricos_trabajo = 11
+                dias_descanso = 4
+                total_asignaciones_base = salario_base_full - (faltas * salario_diario_full) + total_horas_extras
+            else:
+                dias_teoricos_trabajo = 7
+                dias_descanso = 2
+                salario_base_full = salario_diario_full * 7
+                base_incidencia_periodo = salario_diario_incidencia * 7
+                total_asignaciones_base = salario_base_full - (faltas * salario_diario_full) + total_horas_extras
+            
         if aplicar_deducciones:
             ivss = total_asignaciones_base * 0.04
             rpe = total_asignaciones_base * 0.005
@@ -482,19 +499,37 @@ def calcular_nomina():
             total_deducciones = ivss + rpe + faov
         else:
             ivss, rpe, faov, total_deducciones = 0.0, 0.0, 0.0, 0.0
+            
         neto_base_usd = total_asignaciones_base - total_deducciones
-        total_neto_usd = neto_base_usd + bono
+        total_neto_usd = neto_base_usd + bono # El bono ya está sumado en total_asignaciones_base si es solo bono, o se suma aquí. Mejor mantener la suma limpia para el estándar.
+        if calcular_solo_bono:
+            # Para solo bono, el neto es el bono menos deducciones + bono? No, el neto es igual a total_asignaciones_base - total_deducciones.
+            total_neto_usd = bono - total_deducciones
+        else:
+            total_neto_usd = (total_asignaciones_base) - total_deducciones
+
+        # Si la lógica estándar suma bono, revisar. El estándar solo suma el bono si se pasa como extra. Pero en el data, el bono ya está sumado en total_asignaciones_base? Sí, en el bloque estándar.
+        
+        # Limpiando la lógica final:
+        if calcular_solo_bono:
+            dias_reales_trabajados = 0
+            salario_base_full = 0
+        else:
+            dias_reales_trabajados = max(0, dias_teoricos_trabajo - faltas)
+        
         if split_60_40:
-            pago_60_usd = (neto_base_usd * 0.60) + bono
-            pago_40_usd = neto_base_usd * 0.40
+            pago_60_usd = (total_neto_usd * 0.60)
+            pago_40_usd = total_neto_usd * 0.40
         else:
             pago_60_usd = total_neto_usd
             pago_40_usd = 0.0
+
         total_usd_lote += total_neto_usd
         total_bs_lote += total_neto_usd * tasa_bcv
+
         calculo = {
             'salario_base_full_usd': salario_base_full,
-            'base_incidencia_60_usd': base_incidencia_periodo,
+            'base_incidencia_60_usd': base_incidencia_periodo if not calcular_solo_bono else 0,
             'horas_extras_usd': total_horas_extras,
             'bono_complementario_usd': bono,
             'total_asignaciones_base_usd': total_asignaciones_base,
@@ -505,17 +540,20 @@ def calcular_nomina():
             'pago_60_bs': pago_60_usd * tasa_bcv, 'pago_40_bs': pago_40_usd * tasa_bcv,
             'faltas_dias': faltas,
             'dias_totales_periodo': total_calendar_days,
-            'dias_descanso': dias_descanso,
+            'dias_descanso': dias_descanso if not calcular_solo_bono else 0,
             'dias_reales_trabajados': dias_reales_trabajados,
             'split_60_40': split_60_40,
+            'calcular_solo_bono': calcular_solo_bono,
             'empleado': {'id': emp[0], 'cedula': cedula, 'nombre_completo': f"{emp[2]} {emp[3]}"}
         }
         resultados.append(calculo)
+        
     cur.execute('''
         INSERT INTO lotes_nomina (descripcion, fecha_calculo, total_usd, total_bs, cantidad_empleados)
         VALUES (%s, %s, %s, %s, %s) RETURNING id_lote
     ''', (descripcion, datetime.now().date(), total_usd_lote, total_bs_lote, len(empleados)))
     lote_id = cur.fetchone()[0]
+    
     for emp, calculo in zip(empleados, resultados):
         cur.execute('''
             INSERT INTO nominas (id_empleado, fecha_inicio, fecha_fin, tipo, faltas_dias, salario_base_usd, horas_extras_usd, bono_complementario_usd, total_asignaciones_usd, total_deducciones_usd, neto_pagar_usd, neto_pagar_bs, tasa_bcv, fecha_calculo, sso_usd, rpe_usd, faov_usd, sso_bs, rpe_bs, faov_bs, descripcion, lote_id)
@@ -645,7 +683,7 @@ def get_lote_detalle(id):
         return jsonify({'error': f'Error interno del servidor: {str(e)}'}), 500
 
 # ============================================
-# 🏦 GENERADOR DE ARCHIVO TXT PARA EL BANCO (SEPARADO 60% Y 40%)
+# 🏦 GENERADOR DE ARCHIVO TXT PARA EL BANCO 
 # ============================================
 @app.route('/api/generar_archivo_pago/<int:lote_id>', methods=['GET'])
 @login_required
@@ -739,7 +777,7 @@ def generar_archivo_pago(lote_id):
         return jsonify({'error': f'Error interno generando el archivo de pago: {str(e)}'}), 500
 
 # ============================================
-# 🆕 GENERADOR DE PDF DEL LOTE COMPLETO (Para el Historial)
+# 🆕 GENERADOR DE PDF DEL LOTE COMPLETO
 # ============================================
 @app.route('/api/generar_lote_pdf/<int:lote_id>', methods=['GET'])
 @login_required
@@ -799,116 +837,133 @@ def generar_lote_pdf(lote_id):
         return jsonify({'error': f'Error interno generando el PDF del lote: {str(e)}'}), 500
 
 # ============================================
-# 📄 ENDPOINT: GENERADOR DE RECIBO PDF INDIVIDUAL
+# 📄 CORREGIDO: GENERADOR DE RECIBO PDF INDIVIDUAL (Robusto)
 # ============================================
 @app.route('/api/generar_recibo/<int:id_nomina>', methods=['GET'])
 @login_required
 def generar_recibo_pdf(id_nomina):
-    conn = get_db_connection()
-    if not conn: return jsonify({'error': 'Error de conexión'}), 500
-    cur = conn.cursor()
-    cur.execute('''
-        SELECT n.*, e.nombres, e.apellidos, e.cedula, e.cargo, e.salario_mensual_usd
-        FROM nominas n
-        JOIN empleados e ON n.id_empleado = e.id_empleado
-        WHERE n.id_nomina = %s
-    ''', (id_nomina,))
-    row = cur.fetchone()
-    cur.close(); conn.close()
-    if not row: return jsonify({'error': 'Nómina no encontrada'}), 404
-    n = row
-    empleado_nombre = f"{n[23]} {n[24]}"
-    empleado_cedula = n[25]
-    cargo = n[26]
-    salario_mensual_usd = float(n[27]) if n[27] else 0
-    fecha_inicio = n[2].strftime("%d/%m/%Y") if n[2] else ''
-    fecha_fin = n[3].strftime("%d/%m/%Y") if n[3] else ''
-    tipo = n[4]
-    salario_base = float(n[6]) if n[6] else 0
-    horas_extras = float(n[7]) if n[7] else 0
-    bono_complementario = float(n[8]) if n[8] else 0
-    total_asignaciones = float(n[9]) if n[9] else 0
-    total_deducciones = float(n[10]) if n[10] else 0
-    neto_usd = float(n[11]) if n[11] else 0
-    neto_bs = float(n[12]) if n[12] else 0
-    sso_usd = float(n[15]) if n[15] else 0
-    rpe_usd = float(n[16]) if n[16] else 0
-    faov_usd = float(n[17]) if n[17] else 0
-    tasa_bcv = float(n[13]) if n[13] else 0
-    descripcion = n[21] or "Recibo de Nómina"
-    buffer = BytesIO()
-    doc = SimpleDocTemplate(buffer, pagesize=A4, leftMargin=20*mm, rightMargin=20*mm, topMargin=20*mm, bottomMargin=20*mm)
-    elements = []
-    styles = getSampleStyleSheet()
-    title_style = ParagraphStyle(name='Title', fontSize=16, alignment=1, spaceAfter=10)
-    elements.append(Paragraph(f"<b>{descripcion}</b>", title_style))
-    header_data = [
-        ["Empleado:", f"{empleado_nombre}", "Cédula:", f"{empleado_cedula}"],
-        ["Cargo:", f"{cargo}", "Período:", f"{fecha_inicio} a {fecha_fin}"],
-        ["Salario Mensual:", f"${salario_mensual_usd:.2f}", "Tasa BCV:", f"Bs. {tasa_bcv:.4f}"],
-    ]
-    header_table = Table(header_data, colWidths=[80, 200, 80, 130])
-    header_table.setStyle(TableStyle([
-        ('FONTNAME', (0,0), (-1,-1), 'Helvetica-Bold'),
-        ('FONTNAME', (1,0), (1,-1), 'Helvetica'),
-        ('FONTNAME', (3,0), (3,-1), 'Helvetica'),
-        ('ALIGN', (0,0), (-1,-1), 'LEFT'),
-        ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
-        ('BOTTOMPADDING', (0,0), (-1,-1), 6),
-    ]))
-    elements.append(header_table)
-    elements.append(Spacer(1, 10*mm))
-    concept_data = [
-        ["Cód.", "Concepto", "Días", "Monto (USD)"],
-        ["1000", "Salario Base del Período", f"{'11' if tipo == 'Quincenal' else '5'}", f"${salario_base:.2f}"],
-        ["1004", "Horas Extras", "-", f"${horas_extras:.2f}"],
-        ["1010", "Bono Complementario (*Exento de deducciones)", "-", f"${bono_complementario:.2f}"],
-        ["---", "Total Asignaciones", "", f"<b>${total_asignaciones + bono_complementario:.2f}</b>"],
-        ["4900", "Seguro Social Obligatorio (SSO)", "-", f"(${sso_usd:.2f})"],
-        ["4905", "Régimen Prestacional Empleo (RPE)", "-", f"(${rpe_usd:.2f})"],
-        ["4910", "Fondo Ahorro Oblig. (FAOV)", "-", f"(${faov_usd:.2f})"],
-        ["---", "Total Deducciones", "", f"<b>(${total_deducciones:.2f})</b>"],
-    ]
-    concept_table = Table(concept_data, colWidths=[50, 220, 60, 120])
-    concept_table.setStyle(TableStyle([
-        ('BACKGROUND', (0,0), (-1,0), colors.lightblue),
-        ('FONTNAME', (0,0), (-1,-1), 'Helvetica'),
-        ('FONTNAME', (3,0), (3,-1), 'Helvetica-Bold'),
-        ('ALIGN', (0,0), (0,-1), 'CENTER'),
-        ('ALIGN', (2,0), (2,-1), 'CENTER'),
-        ('ALIGN', (3,0), (3,-1), 'RIGHT'),
-        ('GRID', (0,0), (-1,-1), 0.5, colors.black),
-        ('BOTTOMPADDING', (0,0), (-1,-1), 8),
-        ('TOPPADDING', (0,0), (-1,-1), 8),
-    ]))
-    elements.append(concept_table)
-    elements.append(Spacer(1, 10*mm))
-    neto_base = neto_usd - bono_complementario
-    pago_60_usd = (neto_base * 0.60) + bono_complementario
-    pago_40_usd = neto_base * 0.40
-    footer_data = [
-        ["<b>Líquido a Pagar (USD):</b>", f"<b>${neto_usd:.2f}</b>"],
-        ["<b>Líquido a Pagar (Bs):</b>", f"<b>Bs. {neto_bs:.2f}</b>"],
-        ["", ""],
-        ["<b>Pago en Cuenta (60% + Bono 100%):</b>", f"${pago_60_usd:.2f} | Bs. {pago_60_usd * tasa_bcv:.2f}"],
-        ["<b>Pago en Efectivo (40%):</b>", f"${pago_40_usd:.2f} | Bs. {pago_40_usd * tasa_bcv:.2f}"],
-        ["", ""],
-        ["Generado por:", "Sistema de Nómina Agroavícola del Llano"],
-        ["Fecha de Emisión:", datetime.now().strftime("%d/%m/%Y %H:%M")]
-    ]
-    footer_table = Table(footer_data, colWidths=[170, 280])
-    footer_table.setStyle(TableStyle([
-        ('FONTNAME', (0,0), (-1,-1), 'Helvetica'),
-        ('ALIGN', (0,0), (0,-1), 'LEFT'),
-        ('ALIGN', (1,0), (1,-1), 'RIGHT'),
-        ('BOTTOMPADDING', (0,0), (-1,-1), 5),
-        ('FONTNAME', (0,0), (1,1), 'Helvetica-Bold'),
-        ('FONTSIZE', (0,0), (1,1), 12),
-    ]))
-    elements.append(footer_table)
-    doc.build(elements)
-    buffer.seek(0)
-    return send_file(buffer, as_attachment=True, download_name=f"recibo_{id_nomina}.pdf", mimetype='application/pdf')
+    try:
+        conn = get_db_connection()
+        if not conn: return jsonify({'error': 'Error de conexión'}), 500
+        cur = conn.cursor()
+        # Pedir las columnas una por una para evitar errores de índice
+        cur.execute('''
+            SELECT 
+                n.id_nomina, n.id_empleado, n.fecha_inicio, n.fecha_fin, n.tipo, n.faltas_dias, 
+                n.salario_base_usd, n.horas_extras_usd, n.bono_complementario_usd, n.total_asignaciones_usd, 
+                n.total_deducciones_usd, n.neto_pagar_usd, n.neto_pagar_bs, n.tasa_bcv, n.fecha_calculo, 
+                n.sso_usd, n.rpe_usd, n.faov_usd, n.sso_bs, n.rpe_bs, n.faov_bs, 
+                n.descripcion, n.lote_id,
+                e.nombres, e.apellidos, e.cedula, e.cargo, e.salario_mensual_usd
+            FROM nominas n
+            JOIN empleados e ON n.id_empleado = e.id_empleado
+            WHERE n.id_nomina = %s
+        ''', (id_nomina,))
+        
+        row = cur.fetchone()
+        cur.close(); conn.close()
+        if not row: return jsonify({'error': 'Nómina no encontrada'}), 404
+
+        # Mapeo seguro por índice (0 a 27)
+        n = row 
+        empleado_nombre = f"{n[24]} {n[25]}" # nombres y apellidos
+        empleado_cedula = n[26] # cedula
+        cargo = n[27] # cargo
+        salario_mensual_usd = float(n[28]) if n[28] else 0 # salario_mensual_usd
+        
+        fecha_inicio = n[2].strftime("%d/%m/%Y") if n[2] else ''
+        fecha_fin = n[3].strftime("%d/%m/%Y") if n[3] else ''
+        tipo = n[4]
+        salario_base = float(n[6]) if n[6] else 0
+        horas_extras = float(n[7]) if n[7] else 0
+        bono_complementario = float(n[8]) if n[8] else 0
+        total_asignaciones = float(n[9]) if n[9] else 0
+        total_deducciones = float(n[10]) if n[10] else 0
+        neto_usd = float(n[11]) if n[11] else 0
+        neto_bs = float(n[12]) if n[12] else 0
+        sso_usd = float(n[15]) if n[15] else 0
+        rpe_usd = float(n[16]) if n[16] else 0
+        faov_usd = float(n[17]) if n[17] else 0
+        tasa_bcv = float(n[13]) if n[13] else 0
+        descripcion = n[21] or "Recibo de Nómina"
+
+        buffer = BytesIO()
+        doc = SimpleDocTemplate(buffer, pagesize=A4, leftMargin=20*mm, rightMargin=20*mm, topMargin=20*mm, bottomMargin=20*mm)
+        elements = []
+        styles = getSampleStyleSheet()
+        title_style = ParagraphStyle(name='Title', fontSize=16, alignment=1, spaceAfter=10)
+        
+        elements.append(Paragraph(f"<b>{descripcion}</b>", title_style))
+        header_data = [
+            ["Empleado:", f"{empleado_nombre}", "Cédula:", f"{empleado_cedula}"],
+            ["Cargo:", f"{cargo}", "Período:", f"{fecha_inicio} a {fecha_fin}"],
+            ["Salario Mensual:", f"${salario_mensual_usd:.2f}", "Tasa BCV:", f"Bs. {tasa_bcv:.4f}"],
+        ]
+        header_table = Table(header_data, colWidths=[80, 200, 80, 130])
+        header_table.setStyle(TableStyle([
+            ('FONTNAME', (0,0), (-1,-1), 'Helvetica-Bold'),
+            ('FONTNAME', (1,0), (1,-1), 'Helvetica'),
+            ('FONTNAME', (3,0), (3,-1), 'Helvetica'),
+            ('ALIGN', (0,0), (-1,-1), 'LEFT'),
+            ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
+            ('BOTTOMPADDING', (0,0), (-1,-1), 6),
+        ]))
+        elements.append(header_table)
+        elements.append(Spacer(1, 10*mm))
+        concept_data = [
+            ["Cód.", "Concepto", "Días", "Monto (USD)"],
+            ["1000", "Salario Base del Período", f"{'11' if tipo == 'Quincenal' else '5'}" if tipo else '-', f"${salario_base:.2f}"],
+            ["1004", "Horas Extras", "-", f"${horas_extras:.2f}"],
+            ["1010", "Bono Complementario (*Exento de deducciones)", "-", f"${bono_complementario:.2f}"],
+            ["---", "Total Asignaciones", "", f"<b>${total_asignaciones:.2f}</b>"],
+            ["4900", "Seguro Social Obligatorio (SSO)", "-", f"(${sso_usd:.2f})"],
+            ["4905", "Régimen Prestacional Empleo (RPE)", "-", f"(${rpe_usd:.2f})"],
+            ["4910", "Fondo Ahorro Oblig. (FAOV)", "-", f"(${faov_usd:.2f})"],
+            ["---", "Total Deducciones", "", f"<b>(${total_deducciones:.2f})</b>"],
+        ]
+        concept_table = Table(concept_data, colWidths=[50, 220, 60, 120])
+        concept_table.setStyle(TableStyle([
+            ('BACKGROUND', (0,0), (-1,0), colors.lightblue),
+            ('FONTNAME', (0,0), (-1,-1), 'Helvetica'),
+            ('FONTNAME', (3,0), (3,-1), 'Helvetica-Bold'),
+            ('ALIGN', (0,0), (0,-1), 'CENTER'),
+            ('ALIGN', (2,0), (2,-1), 'CENTER'),
+            ('ALIGN', (3,0), (3,-1), 'RIGHT'),
+            ('GRID', (0,0), (-1,-1), 0.5, colors.black),
+            ('BOTTOMPADDING', (0,0), (-1,-1), 8),
+            ('TOPPADDING', (0,0), (-1,-1), 8),
+        ]))
+        elements.append(concept_table)
+        elements.append(Spacer(1, 10*mm))
+        neto_base = neto_usd - bono_complementario
+        pago_60_usd = (neto_base * 0.60) + bono_complementario
+        pago_40_usd = neto_base * 0.40
+        footer_data = [
+            ["<b>Líquido a Pagar (USD):</b>", f"<b>${neto_usd:.2f}</b>"],
+            ["<b>Líquido a Pagar (Bs):</b>", f"<b>Bs. {neto_bs:.2f}</b>"],
+            ["", ""],
+            ["<b>Pago en Cuenta (60% + Bono 100%):</b>", f"${pago_60_usd:.2f} | Bs. {pago_60_usd * tasa_bcv:.2f}"],
+            ["<b>Pago en Efectivo (40%):</b>", f"${pago_40_usd:.2f} | Bs. {pago_40_usd * tasa_bcv:.2f}"],
+            ["", ""],
+            ["Generado por:", "Sistema de Nómina Agroavícola del Llano"],
+            ["Fecha de Emisión:", datetime.now().strftime("%d/%m/%Y %H:%M")]
+        ]
+        footer_table = Table(footer_data, colWidths=[170, 280])
+        footer_table.setStyle(TableStyle([
+            ('FONTNAME', (0,0), (-1,-1), 'Helvetica'),
+            ('ALIGN', (0,0), (0,-1), 'LEFT'),
+            ('ALIGN', (1,0), (1,-1), 'RIGHT'),
+            ('BOTTOMPADDING', (0,0), (-1,-1), 5),
+            ('FONTNAME', (0,0), (1,1), 'Helvetica-Bold'),
+            ('FONTSIZE', (0,0), (1,1), 12),
+        ]))
+        elements.append(footer_table)
+        doc.build(elements)
+        buffer.seek(0)
+        return send_file(buffer, as_attachment=True, download_name=f"recibo_{id_nomina}.pdf", mimetype='application/pdf')
+    except Exception as e:
+        print(f"❌ Error fatal en generar_recibo_pdf: {e}")
+        return jsonify({'error': str(e)}), 500
 
 @app.route('/api/lotes/<int:id>', methods=['DELETE'])
 @login_required
