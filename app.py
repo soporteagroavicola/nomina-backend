@@ -131,7 +131,7 @@ def login_required(f):
     return wrapper
 
 # ============================================
-# MÓDULO DE AUTENTICACIÓN Y USUARIOS
+# MÓDULO DE AUTENTICACIÓN Y USUARIOS (ACTUALIZADO)
 # ============================================
 @app.route('/api/login', methods=['POST'])
 def login():
@@ -191,6 +191,49 @@ def crear_usuario():
     except Exception as e:
         if "duplicate key value violates unique constraint" in str(e):
             return jsonify({'error': 'El nombre de usuario ya existe'}), 400
+        return jsonify({'error': str(e)}), 400
+    finally:
+        cur.close(); conn.close()
+
+# 🆕 EDITAR Y ELIMINAR USUARIOS
+@app.route('/api/usuarios/<int:id>', methods=['PUT'])
+@login_required
+def actualizar_usuario(id):
+    data = request.json
+    username = data.get('username')
+    password = data.get('password')
+    conn = get_db_connection()
+    if not conn: return jsonify({'error': 'Error de conexión'}), 500
+    cur = conn.cursor()
+    try:
+        if password:
+            hashed_pass = generate_password_hash(password)
+            cur.execute("UPDATE usuarios SET username = %s, password = %s WHERE id = %s", (username, hashed_pass, id))
+        else:
+            cur.execute("UPDATE usuarios SET username = %s WHERE id = %s", (username, id))
+        conn.commit()
+        return jsonify({'mensaje': 'Usuario actualizado exitosamente'})
+    except Exception as e:
+        if "duplicate key value violates unique constraint" in str(e):
+            return jsonify({'error': 'El nombre de usuario ya existe'}), 400
+        return jsonify({'error': str(e)}), 400
+    finally:
+        cur.close(); conn.close()
+
+@app.route('/api/usuarios/<int:id>', methods=['DELETE'])
+@login_required
+def eliminar_usuario(id):
+    user_id = session.get('user_id')
+    if user_id == id:
+        return jsonify({'error': 'No puedes eliminar tu propio usuario'}), 400
+    conn = get_db_connection()
+    if not conn: return jsonify({'error': 'Error de conexión'}), 500
+    cur = conn.cursor()
+    try:
+        cur.execute("DELETE FROM usuarios WHERE id = %s", (id,))
+        conn.commit()
+        return jsonify({'mensaje': 'Usuario eliminado exitosamente'})
+    except Exception as e:
         return jsonify({'error': str(e)}), 400
     finally:
         cur.close(); conn.close()
@@ -360,7 +403,6 @@ def actualizar_parametro():
     except Exception as e: return jsonify({'error': str(e)}), 400
     finally: cur.close(); conn.close()
 
-# 🆕 ENDPOINT: ACTUALIZAR TASA BCV AUTOMÁTICAMENTE
 @app.route('/api/actualizar_bcv', methods=['GET'])
 @login_required
 def actualizar_bcv():
@@ -603,11 +645,12 @@ def get_lote_detalle(id):
         return jsonify({'error': f'Error interno del servidor: {str(e)}'}), 500
 
 # ============================================
-# 🏦 GENERADOR DE ARCHIVO TXT PARA EL BANCO
+# 🏦 GENERADOR DE ARCHIVO TXT PARA EL BANCO (SEPARADO 60% Y 40%)
 # ============================================
 @app.route('/api/generar_archivo_pago/<int:lote_id>', methods=['GET'])
 @login_required
 def generar_archivo_pago(lote_id):
+    tipo = request.args.get('tipo', '60')
     try:
         conn = get_db_connection()
         if not conn: return jsonify({'error': 'Error de conexión'}), 500
@@ -624,19 +667,38 @@ def generar_archivo_pago(lote_id):
         cur.execute("SELECT valor FROM parametros WHERE clave = 'codigo_banco_defecto'")
         row = cur.fetchone()
         codigo_banco = str(row[0]) if row else "BSCHVECA"
-        cur.execute('''
-            SELECT 
-                e.cedula, 
-                e.cuenta_bancaria, 
-                e.nombres, 
-                e.apellidos,
-                (n.neto_pagar_usd * 0.60 * n.tasa_bcv) as pago_60_bs
-            FROM nominas n
-            JOIN empleados e ON n.id_empleado = e.id_empleado
-            WHERE n.lote_id = %s 
-              AND e.cuenta_bancaria IS NOT NULL 
-              AND e.cuenta_bancaria != ''
-        ''', (lote_id,))
+        
+        if tipo == '60':
+            cur.execute('''
+                SELECT 
+                    e.cedula, 
+                    e.cuenta_bancaria, 
+                    e.nombres, 
+                    e.apellidos,
+                    ((n.neto_pagar_usd * 0.60) + n.bono_complementario_usd) * n.tasa_bcv as monto_pago_bs
+                FROM nominas n
+                JOIN empleados e ON n.id_empleado = e.id_empleado
+                WHERE n.lote_id = %s 
+                  AND e.cuenta_bancaria IS NOT NULL 
+                  AND e.cuenta_bancaria != ''
+            ''', (lote_id,))
+        elif tipo == '40':
+            cur.execute('''
+                SELECT 
+                    e.cedula, 
+                    e.cuenta_bancaria, 
+                    e.nombres, 
+                    e.apellidos,
+                    (n.neto_pagar_usd * 0.40) * n.tasa_bcv as monto_pago_bs
+                FROM nominas n
+                JOIN empleados e ON n.id_empleado = e.id_empleado
+                WHERE n.lote_id = %s 
+                  AND e.cuenta_bancaria IS NOT NULL 
+                  AND e.cuenta_bancaria != ''
+            ''', (lote_id,))
+        else:
+            return jsonify({'error': 'Tipo de archivo no válido'}), 400
+
         rows = cur.fetchall()
         cur.close(); conn.close()
         if not rows: return jsonify({'error': 'No hay empleados con cuentas bancarias registradas en este lote.'}), 404
@@ -669,7 +731,7 @@ def generar_archivo_pago(lote_id):
         return send_file(
             mem,
             as_attachment=True,
-            download_name=f"PROV_{datetime.now().strftime('%Y%m%d')}.txt",
+            download_name=f"PROV_{tipo}_{datetime.now().strftime('%Y%m%d')}.txt",
             mimetype='text/plain'
         )
     except Exception as e:
@@ -686,7 +748,7 @@ def generar_lote_pdf(lote_id):
         conn = get_db_connection()
         if not conn: return jsonify({'error': 'Error de conexión'}), 500
         cur = conn.cursor()
-        cur.execute("SELECT * FROM lotes_nomina WHERE id_lote = %s", (id,))
+        cur.execute("SELECT * FROM lotes_nomina WHERE id_lote = %s", (lote_id,))
         lote_row = cur.fetchone()
         if not lote_row: return jsonify({'error': 'Lote no encontrado'}), 404
         cur.execute('''
@@ -705,15 +767,10 @@ def generar_lote_pdf(lote_id):
         doc = SimpleDocTemplate(buffer, pagesize=A4, leftMargin=20*mm, rightMargin=20*mm, topMargin=20*mm, bottomMargin=20*mm)
         elements = []
         styles = getSampleStyleSheet()
-
         title_style = ParagraphStyle(name='Title', fontSize=16, alignment=1, spaceAfter=10)
-        
-        # Encabezado
         elements.append(Paragraph(f"<b>Nómina Agroavícola del Llano</b>", title_style))
         elements.append(Paragraph(f"<b>Lote #{lote_row[0]} - {lote_row[1] or 'Sin descripción'}</b><br/><small>Generado el {lote_row[2].strftime('%d/%m/%Y')}</small>", styles['Normal']))
         elements.append(Spacer(1, 10*mm))
-
-        # Tabla de empleados
         data = [["Cédula", "Empleado", "Cargo", "Salario Mensual", "Neto USD", "Neto Bs"]]
         total_usd = 0.0
         total_bs = 0.0
@@ -724,10 +781,7 @@ def generar_lote_pdf(lote_id):
             total_usd += neto_usd
             total_bs += neto_bs
             data.append([row[7], nombre, row[8] or '', f"${float(row[9]):.2f}" if row[9] else '', f"${neto_usd:.2f}", f"Bs. {neto_bs:.2f}"])
-        
-        # Fila de totales
         data.append(["", "", "", "<b>TOTAL GENERAL</b>", f"<b>${total_usd:.2f}</b>", f"<b>Bs. {total_bs:.2f}</b>"])
-
         table = Table(data, colWidths=[80, 130, 120, 100, 80, 80])
         table.setStyle(TableStyle([
             ('BACKGROUND', (0,0), (-1,0), colors.lightblue),
@@ -737,11 +791,9 @@ def generar_lote_pdf(lote_id):
             ('FONTNAME', (0,-1), (-1,-1), 'Helvetica-Bold'),
         ]))
         elements.append(table)
-        
         doc.build(elements)
         buffer.seek(0)
         return send_file(buffer, as_attachment=True, download_name=f"lote_{lote_id}.pdf", mimetype='application/pdf')
-
     except Exception as e:
         print(f"❌ Error generando PDF del lote: {e}")
         return jsonify({'error': f'Error interno generando el PDF del lote: {str(e)}'}), 500
