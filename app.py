@@ -85,11 +85,13 @@ def init_db():
         ''')
         default_pass = generate_password_hash('admin123')
         cur.execute("INSERT INTO usuarios (username, password) VALUES (%s, %s) ON CONFLICT (username) DO NOTHING", ('admin', default_pass))
+        
         cur.execute('''
             CREATE TABLE IF NOT EXISTS parametros (
                 id SERIAL PRIMARY KEY, clave TEXT UNIQUE NOT NULL, valor REAL NOT NULL, fecha_actualizacion DATE
             )
         ''')
+        # Parámetros de la nómina
         cur.execute("SELECT * FROM parametros WHERE clave = 'tasa_bcv'")
         if not cur.fetchone(): cur.execute("INSERT INTO parametros (clave, valor) VALUES ('tasa_bcv', 755.1552)")
         cur.execute("SELECT * FROM parametros WHERE clave = 'cestaticket_usd'")
@@ -100,6 +102,17 @@ def init_db():
         if not cur.fetchone(): cur.execute("INSERT INTO parametros (clave, valor) VALUES ('porcentaje_rpe', 0.005)")
         cur.execute("SELECT * FROM parametros WHERE clave = 'porcentaje_faov'")
         if not cur.fetchone(): cur.execute("INSERT INTO parametros (clave, valor) VALUES ('porcentaje_faov', 0.01)")
+
+        # 🆕 PARÁMETROS DE LA EMPRESA PARA ARCHIVO TXT BANCARIO
+        cur.execute("SELECT * FROM parametros WHERE clave = 'rif_empresa'")
+        if not cur.fetchone(): cur.execute("INSERT INTO parametros (clave, valor) VALUES ('rif_empresa', 'J409876136')")
+        cur.execute("SELECT * FROM parametros WHERE clave = 'cuenta_empresa'")
+        if not cur.fetchone(): cur.execute("INSERT INTO parametros (clave, valor) VALUES ('cuenta_empresa', '000102034732')")
+        cur.execute("SELECT * FROM parametros WHERE clave = 'nombre_cuenta_empresa'")
+        if not cur.fetchone(): cur.execute("INSERT INTO parametros (clave, valor) VALUES ('nombre_cuenta_empresa', 'CODIZULCA')")
+        cur.execute("SELECT * FROM parametros WHERE clave = 'codigo_banco_defecto'")
+        if not cur.fetchone(): cur.execute("INSERT INTO parametros (clave, valor) VALUES ('codigo_banco_defecto', 'BSCHVECA')")
+        
         conn.commit(); cur.close(); conn.close()
         print("✅ Base de datos inicializada correctamente")
     except Exception as e:
@@ -551,7 +564,7 @@ def get_lote_detalle(id):
         return jsonify({'error': f'Error interno del servidor: {str(e)}'}), 500
 
 # ============================================
-# 🆕 NUEVO ENDPOINT: GENERADOR DE ARCHIVO TXT PARA EL BANCO
+# 🆕 GENERADOR DE ARCHIVO TXT PARA EL BANCO (CON FORMATO DE ANCHO FIJO)
 # ============================================
 @app.route('/api/generar_archivo_pago/<int:lote_id>', methods=['GET'])
 @login_required
@@ -560,19 +573,37 @@ def generar_archivo_pago(lote_id):
         conn = get_db_connection()
         if not conn: return jsonify({'error': 'Error de conexión'}), 500
         cur = conn.cursor()
+
+        # 🔽 Obtener datos de la empresa desde parametros
+        cur.execute("SELECT valor FROM parametros WHERE clave = 'rif_empresa'")
+        row = cur.fetchone()
+        rif_empresa = str(row[0]) if row else "J409876136"
         
-        # Obtenemos los datos bancarios y calculamos el 60% de pago
-        # Tomamos el neto_pagar_usd y lo multiplicamos por 0.60 y por la tasa BCV para el monto en Bs.
+        cur.execute("SELECT valor FROM parametros WHERE clave = 'cuenta_empresa'")
+        row = cur.fetchone()
+        cuenta_empresa = str(row[0]) if row else "000102034732"
+        
+        cur.execute("SELECT valor FROM parametros WHERE clave = 'nombre_cuenta_empresa'")
+        row = cur.fetchone()
+        nombre_cuenta_empresa = str(row[0]) if row else "CODIZULCA"
+
+        cur.execute("SELECT valor FROM parametros WHERE clave = 'codigo_banco_defecto'")
+        row = cur.fetchone()
+        codigo_banco = str(row[0]) if row else "BSCHVECA"
+
+        # 🔽 Obtener los empleados y el monto en Bs (del 60%)
         cur.execute('''
             SELECT 
                 e.cedula, 
                 e.cuenta_bancaria, 
                 e.nombres, 
                 e.apellidos,
-                n.neto_pagar_usd * 0.60 * n.tasa_bcv as pago_60_bs
+                (n.neto_pagar_usd * 0.60 * n.tasa_bcv) as pago_60_bs
             FROM nominas n
             JOIN empleados e ON n.id_empleado = e.id_empleado
-            WHERE n.lote_id = %s AND e.cuenta_bancaria IS NOT NULL AND e.cuenta_bancaria != ''
+            WHERE n.lote_id = %s 
+              AND e.cuenta_bancaria IS NOT NULL 
+              AND e.cuenta_bancaria != ''
         ''', (lote_id,))
         
         rows = cur.fetchall()
@@ -582,40 +613,60 @@ def generar_archivo_pago(lote_id):
         if not rows:
             return jsonify({'error': 'No hay empleados con cuentas bancarias registradas en este lote.'}), 404
 
-        # Crear el contenido del archivo TXT
-        # Formato típico venezolano: Cédula;Número de Cuenta;Monto Bs;Nombre
-        contenido = StringIO()
-        contenido.write("CEDULA;CUENTA;MONTO_BS;NOMBRE\n") # Cabecera para referencia
-        
-        for row in rows:
-            cedula = str(row[0]) if row[0] else ''
-            cuenta = str(row[1]) if row[1] else ''
-            nombre = f"{row[2]} {row[3]}"
-            monto = float(row[4]) if row[4] else 0.0
-            
-            # Monto con 2 decimales
-            monto_str = f"{monto:.2f}"
-            
-            # Escribir línea separada por punto y coma
-            contenido.write(f"{cedula};{cuenta};{monto_str};{nombre}\n")
+        fecha_ejecucion = datetime.now().strftime("%d/%m/%Y")
+        total_amount = 0.0
+        buffer = StringIO()
+        total_count = len(rows)
 
-        # Convertir a Bytes para descarga
+        # 1️⃣ HEADER (Cabecera del archivo)
+        # Formato: HEADER(8) + total_count(8) + 0011853(7) + rif(10) + fecha(10) + fecha(10)
+        header_line = f"HEADER  {total_count:08d}0011853{rif_empresa:<10}{fecha_ejecucion}{fecha_ejecucion}"
+        buffer.write(header_line + "\n")
+
+        # 2️⃣ DEBITOS & CREDITOS (Por cada empleado)
+        for i, row in enumerate(rows, 1):
+            cedula = str(row[0]) if row[0] else ''
+            cuenta_empleado = str(row[1]) if row[1] else ''
+            nombre = f"{row[2]} {row[3]}" if row[2] and row[3] else row[2] or row[3] or ''
+            monto = float(row[4]) if row[4] else 0.0
+            total_amount += monto
+            
+            # Formatear monto: 16 dígitos con 2 decimales y coma, ej: 0000000000055270,04
+            monto_str = f"{monto:016.2f}".replace('.', ',')
+
+            # 🔴 Línea DEBITO (Ancho fijo de 116 caracteres)
+            debit_line = (f"DEBITO  {i:08d}{rif_empresa:<10}{nombre_cuenta_empresa:<30}"
+                          f"{fecha_ejecucion}{cuenta_empresa:<12}00000487092{monto_str:<21}VEB40 ")
+
+            # 🟢 Línea CREDITO (Ancho fijo de 108 caracteres)
+            credit_line = (f"CREDITO {i:08d}{cedula:<10}{nombre:<29}"
+                           f"{cuenta_empleado:<22}{monto_str:<21}00{codigo_banco:<8}")
+
+            buffer.write(debit_line + "\n")
+            buffer.write(credit_line + "\n")
+
+        # 3️⃣ TOTAL (Pie del archivo)
+        # Formato: TOTAL(8) + total_count(5) + total_count(5) + total_amount_str(18)
+        total_amount_str = f"{total_amount:015.2f}".replace('.', ',')
+        total_line = f"TOTAL   {total_count:05d}{total_count:05d}{total_amount_str:<18}"
+        buffer.write(total_line + "\n")
+
+        # 🔽 Codificar en CP-1252 (Estándar bancario en Venezuela para tildes y caracteres)
         mem = BytesIO()
-        mem.write(contenido.getvalue().encode('utf-8'))
+        mem.write(buffer.getvalue().encode('cp1252'))
         mem.seek(0)
-        contenido.close()
+        buffer.close()
 
         return send_file(
             mem,
             as_attachment=True,
-            download_name=f"pago_bancario_lote_{lote_id}.txt",
+            download_name=f"PROV_{datetime.now().strftime('%Y%m%d')}.txt",
             mimetype='text/plain'
         )
 
     except Exception as e:
         print(f"❌ Error generando archivo bancario: {e}")
         return jsonify({'error': f'Error interno generando el archivo de pago: {str(e)}'}), 500
-
 
 @app.route('/api/lotes/<int:id>', methods=['DELETE'])
 @login_required
