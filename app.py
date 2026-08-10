@@ -4,7 +4,7 @@ from flask import Flask, request, jsonify, session, send_file
 from flask_cors import CORS
 from datetime import datetime, timedelta
 from werkzeug.security import generate_password_hash, check_password_hash
-from io import BytesIO
+from io import BytesIO, StringIO
 from reportlab.pdfgen import canvas
 from reportlab.lib.pagesizes import A4, landscape
 from reportlab.lib.units import inch, mm
@@ -43,7 +43,7 @@ def init_db():
         conn = get_db_connection()
         if not conn: return
         cur = conn.cursor()
-        # Crear tablas (incluyendo el bono_complementario_usd)
+        # Crear tablas
         cur.execute('''
             CREATE TABLE IF NOT EXISTS empleados (
                 id_empleado SERIAL PRIMARY KEY, cedula TEXT UNIQUE NOT NULL, nombres TEXT NOT NULL, apellidos TEXT NOT NULL,
@@ -483,9 +483,6 @@ def get_lotes():
         'sucursales_involucradas': r[7] or 'Mixto / Sin Sucursal'
     } for r in rows])
 
-# ============================================
-# 🛠️ CORRECCIÓN DEFINITIVA: DETALLE DEL LOTE (CONSULTA EXPLÍCITA)
-# ============================================
 @app.route('/api/lotes/<int:id>', methods=['GET'])
 @login_required
 def get_lote_detalle(id):
@@ -493,12 +490,9 @@ def get_lote_detalle(id):
         conn = get_db_connection()
         if not conn: return jsonify({'error': 'Error de conexión a la BD'}), 500
         cur = conn.cursor()
-        
         cur.execute("SELECT * FROM lotes_nomina WHERE id_lote = %s", (id,))
         lote_row = cur.fetchone()
         if not lote_row: return jsonify({'error': 'Lote no encontrado'}), 404
-        
-        # 🛡️ CORRECCIÓN: Pedimos las columnas una por una para evitar el desfase de ALTER TABLE
         cur.execute('''
             SELECT 
                 n.id_nomina, n.id_empleado, n.fecha_inicio, n.fecha_fin, n.tipo, n.faltas_dias, 
@@ -515,7 +509,6 @@ def get_lote_detalle(id):
         ''', (id,))
         nominas_rows = cur.fetchall()
         cur.close(); conn.close()
-        
         nominas = []
         for n in nominas_rows:
             salario_base_usd = float(n[6]) if n[6] else 0
@@ -556,6 +549,73 @@ def get_lote_detalle(id):
     except Exception as e:
         print(f"❌ Error crítico en get_lote_detalle: {e}")
         return jsonify({'error': f'Error interno del servidor: {str(e)}'}), 500
+
+# ============================================
+# 🆕 NUEVO ENDPOINT: GENERADOR DE ARCHIVO TXT PARA EL BANCO
+# ============================================
+@app.route('/api/generar_archivo_pago/<int:lote_id>', methods=['GET'])
+@login_required
+def generar_archivo_pago(lote_id):
+    try:
+        conn = get_db_connection()
+        if not conn: return jsonify({'error': 'Error de conexión'}), 500
+        cur = conn.cursor()
+        
+        # Obtenemos los datos bancarios y calculamos el 60% de pago
+        # Tomamos el neto_pagar_usd y lo multiplicamos por 0.60 y por la tasa BCV para el monto en Bs.
+        cur.execute('''
+            SELECT 
+                e.cedula, 
+                e.cuenta_bancaria, 
+                e.nombres, 
+                e.apellidos,
+                n.neto_pagar_usd * 0.60 * n.tasa_bcv as pago_60_bs
+            FROM nominas n
+            JOIN empleados e ON n.id_empleado = e.id_empleado
+            WHERE n.lote_id = %s AND e.cuenta_bancaria IS NOT NULL AND e.cuenta_bancaria != ''
+        ''', (lote_id,))
+        
+        rows = cur.fetchall()
+        cur.close()
+        conn.close()
+
+        if not rows:
+            return jsonify({'error': 'No hay empleados con cuentas bancarias registradas en este lote.'}), 404
+
+        # Crear el contenido del archivo TXT
+        # Formato típico venezolano: Cédula;Número de Cuenta;Monto Bs;Nombre
+        contenido = StringIO()
+        contenido.write("CEDULA;CUENTA;MONTO_BS;NOMBRE\n") # Cabecera para referencia
+        
+        for row in rows:
+            cedula = str(row[0]) if row[0] else ''
+            cuenta = str(row[1]) if row[1] else ''
+            nombre = f"{row[2]} {row[3]}"
+            monto = float(row[4]) if row[4] else 0.0
+            
+            # Monto con 2 decimales
+            monto_str = f"{monto:.2f}"
+            
+            # Escribir línea separada por punto y coma
+            contenido.write(f"{cedula};{cuenta};{monto_str};{nombre}\n")
+
+        # Convertir a Bytes para descarga
+        mem = BytesIO()
+        mem.write(contenido.getvalue().encode('utf-8'))
+        mem.seek(0)
+        contenido.close()
+
+        return send_file(
+            mem,
+            as_attachment=True,
+            download_name=f"pago_bancario_lote_{lote_id}.txt",
+            mimetype='text/plain'
+        )
+
+    except Exception as e:
+        print(f"❌ Error generando archivo bancario: {e}")
+        return jsonify({'error': f'Error interno generando el archivo de pago: {str(e)}'}), 500
+
 
 @app.route('/api/lotes/<int:id>', methods=['DELETE'])
 @login_required
