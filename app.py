@@ -43,6 +43,7 @@ def init_db():
         conn = get_db_connection()
         if not conn: return
         cur = conn.cursor()
+        # Crear tablas (incluyendo el bono_complementario_usd)
         cur.execute('''
             CREATE TABLE IF NOT EXISTS empleados (
                 id_empleado SERIAL PRIMARY KEY, cedula TEXT UNIQUE NOT NULL, nombres TEXT NOT NULL, apellidos TEXT NOT NULL,
@@ -204,7 +205,7 @@ def cambiar_password():
         cur.close(); conn.close()
 
 # ============================================
-# ENDPOINTS DE NÓMINA (EMPLEADOS, SUCURSALES, PARÁMETROS)
+# ENDPOINTS DE NÓMINA
 # ============================================
 @app.route('/api/empleados', methods=['GET'])
 @login_required
@@ -321,7 +322,7 @@ def actualizar_parametro():
     finally: cur.close(); conn.close()
 
 # ============================================
-# 🆕 MÓDULO DE CALCULAR NÓMINA (BONO EXENTO Y 100% ÍNTEGRO)
+# CÁLCULO DE NÓMINA
 # ============================================
 @app.route('/api/calcular_nomina', methods=['POST'])
 @login_required
@@ -331,7 +332,6 @@ def calcular_nomina():
     descripcion = data.get('descripcion', '')
     empleados_ids, faltas_dict, horas_extras_dict = data.get('empleados_ids', []), data.get('faltas', {}), data.get('horas_extras', {})
     bonos_dict = data.get('bonos', {})
-    
     aplicar_deducciones = data.get('aplicar_deducciones', True)
     split_60_40 = data.get('split_60_40', False)
     
@@ -386,11 +386,9 @@ def calcular_nomina():
             ivss, rpe, faov, total_deducciones = 0.0, 0.0, 0.0, 0.0
             
         neto_base_usd = total_asignaciones_base - total_deducciones
-        # 🆕 EL BONO SE SUMA ÍNTEGRO AL NETO
         total_neto_usd = neto_base_usd + bono
         
         if split_60_40:
-            # El bono entero va al 60% (Cuenta) y no se divide
             pago_60_usd = (neto_base_usd * 0.60) + bono
             pago_40_usd = neto_base_usd * 0.40
         else:
@@ -485,50 +483,72 @@ def get_lotes():
         'sucursales_involucradas': r[7] or 'Mixto / Sin Sucursal'
     } for r in rows])
 
+# ============================================
+# 🛠️ CORRECCIÓN: DETALLE DEL LOTE CON MANEJO DE ERRORES
+# ============================================
 @app.route('/api/lotes/<int:id>', methods=['GET'])
 @login_required
 def get_lote_detalle(id):
-    conn = get_db_connection()
-    if not conn: return jsonify([])
-    cur = conn.cursor()
-    cur.execute("SELECT * FROM lotes_nomina WHERE id_lote = %s", (id,))
-    lote_row = cur.fetchone()
-    if not lote_row: return jsonify({'error': 'Lote no encontrado'}), 404
-    cur.execute('''
-        SELECT n.*, e.nombres, e.apellidos, e.cedula, s.id_sucursal, s.nombre as sucursal_nombre
-        FROM nominas n
-        JOIN empleados e ON n.id_empleado = e.id_empleado
-        LEFT JOIN sucursales s ON e.sucursal_id = s.id_sucursal
-        WHERE n.lote_id = %s
-        ORDER BY e.nombres
-    ''', (id,))
-    nominas_rows = cur.fetchall(); cur.close(); conn.close()
-    nominas = []
-    for n in nominas_rows:
-        salario_base_usd = float(n[6]) if n[6] else 0
-        nominas.append({
-            'id_nomina': n[0], 'id_empleado': n[1], 'fecha_inicio': n[2].isoformat(), 'fecha_fin': n[3].isoformat(),
-            'tipo': n[4], 'faltas_dias': n[5], 'salario_base_usd': salario_base_usd,
-            'base_incidencia_60_usd': salario_base_usd * 0.60,
-            'horas_extras_usd': float(n[7]) if n[7] else 0,
-            'bono_complementario_usd': float(n[8]) if n[8] else 0,
-            'total_asignaciones_usd': float(n[9]) if n[9] else 0,
-            'total_deducciones_usd': float(n[10]) if n[10] else 0,
-            'neto_pagar_usd': float(n[11]) if n[11] else 0,
-            'neto_pagar_bs': float(n[12]) if n[12] else 0,
-            'tasa_bcv': float(n[13]) if n[13] else 0,
-            'fecha_calculo': n[14].isoformat(),
-            'sso_usd': float(n[15]) if n[15] else 0, 'rpe_usd': float(n[16]) if n[16] else 0, 'faov_usd': float(n[17]) if n[17] else 0,
-            'sso_bs': float(n[18]) if n[18] else 0, 'rpe_bs': float(n[19]) if n[19] else 0, 'faov_bs': float(n[20]) if n[20] else 0,
-            'descripcion': n[21], 'lote_id': n[22],
-            'nombres': n[23], 'apellidos': n[24], 'cedula': n[25], 'sucursal_id': n[26], 'sucursal_nombre': n[27] or 'Sin sucursal'
+    try:
+        conn = get_db_connection()
+        if not conn: return jsonify({'error': 'Error de conexión a la BD'}), 500
+        cur = conn.cursor()
+        
+        cur.execute("SELECT * FROM lotes_nomina WHERE id_lote = %s", (id,))
+        lote_row = cur.fetchone()
+        if not lote_row: return jsonify({'error': 'Lote no encontrado'}), 404
+        
+        cur.execute('''
+            SELECT n.*, e.nombres, e.apellidos, e.cedula, s.id_sucursal, s.nombre as sucursal_nombre
+            FROM nominas n
+            JOIN empleados e ON n.id_empleado = e.id_empleado
+            LEFT JOIN sucursales s ON e.sucursal_id = s.id_sucursal
+            WHERE n.lote_id = %s
+            ORDER BY e.nombres
+        ''', (id,))
+        nominas_rows = cur.fetchall()
+        cur.close(); conn.close()
+        
+        nominas = []
+        for n in nominas_rows:
+            salario_base_usd = float(n[6]) if n[6] else 0
+            nominas.append({
+                'id_nomina': n[0], 'id_empleado': n[1], 
+                'fecha_inicio': n[2].isoformat() if n[2] else None, 
+                'fecha_fin': n[3].isoformat() if n[3] else None,
+                'tipo': n[4], 'faltas_dias': n[5], 'salario_base_usd': salario_base_usd,
+                'base_incidencia_60_usd': salario_base_usd * 0.60,
+                'horas_extras_usd': float(n[7]) if n[7] else 0,
+                'bono_complementario_usd': float(n[8]) if n[8] else 0,
+                'total_asignaciones_usd': float(n[9]) if n[9] else 0,
+                'total_deducciones_usd': float(n[10]) if n[10] else 0,
+                'neto_pagar_usd': float(n[11]) if n[11] else 0,
+                'neto_pagar_bs': float(n[12]) if n[12] else 0,
+                'tasa_bcv': float(n[13]) if n[13] else 0,
+                'fecha_calculo': n[14].isoformat() if n[14] else None,
+                'sso_usd': float(n[15]) if n[15] else 0,
+                'rpe_usd': float(n[16]) if n[16] else 0,
+                'faov_usd': float(n[17]) if n[17] else 0,
+                'sso_bs': float(n[18]) if n[18] else 0,
+                'rpe_bs': float(n[19]) if n[19] else 0,
+                'faov_bs': float(n[20]) if n[20] else 0,
+                'descripcion': n[21] if n[21] else '',
+                'lote_id': n[22] if n[22] else None,
+                'nombres': n[23] if n[23] else '',
+                'apellidos': n[24] if n[24] else '',
+                'cedula': n[25] if n[25] else '',
+                'sucursal_id': n[26] if n[26] else None,
+                'sucursal_nombre': n[27] if n[27] else 'Sin sucursal'
+            })
+        return jsonify({
+            'id_lote': lote_row[0], 'descripcion': lote_row[1], 'fecha_calculo': lote_row[2].isoformat() if lote_row[2] else None,
+            'total_usd': float(lote_row[3]) if lote_row[3] else 0, 'total_bs': float(lote_row[4]) if lote_row[4] else 0,
+            'cantidad_empleados_lote': lote_row[5],
+            'nominas': nominas
         })
-    return jsonify({
-        'id_lote': lote_row[0], 'descripcion': lote_row[1], 'fecha_calculo': lote_row[2].isoformat(),
-        'total_usd': float(lote_row[3]) if lote_row[3] else 0, 'total_bs': float(lote_row[4]) if lote_row[4] else 0,
-        'cantidad_empleados_lote': lote_row[5],
-        'nominas': nominas
-    })
+    except Exception as e:
+        print(f"❌ Error crítico en get_lote_detalle: {e}")
+        return jsonify({'error': f'Error interno del servidor: {str(e)}'}), 500
 
 @app.route('/api/lotes/<int:id>', methods=['DELETE'])
 @login_required
@@ -544,10 +564,11 @@ def eliminar_lote(id):
     except Exception as e:
         conn.rollback()
         return jsonify({'error': str(e)}), 400
-    finally: cur.close(); conn.close()
+    finally:
+        cur.close(); conn.close()
 
 # ============================================
-# ENDPOINT: GENERADOR DE RECIBO PDF (BONO EXENTO Y 100% ÍNTEGRO)
+# ENDPOINT: GENERADOR DE RECIBO PDF 
 # ============================================
 @app.route('/api/generar_recibo/<int:id_nomina>', methods=['GET'])
 @login_required
@@ -571,8 +592,8 @@ def generar_recibo_pdf(id_nomina):
     cargo = n[26]
     salario_mensual_usd = float(n[27]) if n[27] else 0
     
-    fecha_inicio = n[2].strftime("%d/%m/%Y")
-    fecha_fin = n[3].strftime("%d/%m/%Y")
+    fecha_inicio = n[2].strftime("%d/%m/%Y") if n[2] else ''
+    fecha_fin = n[3].strftime("%d/%m/%Y") if n[3] else ''
     tipo = n[4]
     salario_base = float(n[6]) if n[6] else 0
     horas_extras = float(n[7]) if n[7] else 0
@@ -587,7 +608,6 @@ def generar_recibo_pdf(id_nomina):
     tasa_bcv = float(n[13]) if n[13] else 0
     descripcion = n[21] or "Recibo de Nómina"
 
-    # 1. Crear Buffer de PDF
     buffer = BytesIO()
     doc = SimpleDocTemplate(buffer, pagesize=A4, leftMargin=20*mm, rightMargin=20*mm, topMargin=20*mm, bottomMargin=20*mm)
     elements = []
@@ -616,7 +636,6 @@ def generar_recibo_pdf(id_nomina):
     elements.append(header_table)
     elements.append(Spacer(1, 10*mm))
 
-    # 3. Tabla de Conceptos (Bono exento, no deducible)
     concept_data = [
         ["Cód.", "Concepto", "Días", "Monto (USD)"],
         ["1000", "Salario Base del Período", f"{'11' if tipo == 'Quincenal' else '5'}", f"${salario_base:.2f}"],
@@ -643,7 +662,6 @@ def generar_recibo_pdf(id_nomina):
     elements.append(concept_table)
     elements.append(Spacer(1, 10*mm))
 
-    # 4. DESGLOSE DE PAGO 60/40 Y TOTALES FINALES
     neto_base = neto_usd - bono_complementario
     pago_60_usd = (neto_base * 0.60) + bono_complementario
     pago_40_usd = neto_base * 0.40
