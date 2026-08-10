@@ -767,7 +767,7 @@ def generar_archivo_pago(lote_id):
         return jsonify({'error': f'Error interno generando el archivo de pago: {str(e)}'}), 500
 
 # ============================================
-# 🆕 GENERADOR DE PDF DEL LOTE COMPLETO (CON LOGO Y FORMATO CORREGIDO)
+# 🆕 GENERADOR DE PDF DEL LOTE COMPLETO (CON LOGO EN RAÍZ)
 # ============================================
 @app.route('/api/generar_lote_pdf/<int:lote_id>', methods=['GET'])
 @login_required
@@ -798,8 +798,8 @@ def generar_lote_pdf(lote_id):
         normal_style = styles['Normal']
         title_style = ParagraphStyle(name='Title', fontSize=16, alignment=1, spaceAfter=10)
         
-        # 🆕 Logo y Encabezado
-        logo_path = os.path.join(app.root_path, 'static', 'logo.png')
+        # 🆕 LOGO (Ahora busca en la raíz)
+        logo_path = os.path.join(app.root_path, 'logo.png')
         try:
             logo = Image(logo_path)
             logo.drawHeight = 1.2*inch
@@ -855,7 +855,7 @@ def generar_lote_pdf(lote_id):
         return jsonify({'error': f'Error interno generando el PDF del lote: {str(e)}'}), 500
 
 # ============================================
-# 📄 CORREGIDO Y ALINEADO: GENERADOR DE RECIBO PDF INDIVIDUAL (Con Logo, Bs y diseño profesional)
+# 📄 CORREGIDO Y ALINEADO: GENERADOR DE RECIBO PDF INDIVIDUAL (Logo en raíz)
 # ============================================
 @app.route('/api/generar_recibo/<int:id_nomina>', methods=['GET'])
 @login_required
@@ -881,7 +881,7 @@ def generar_recibo_pdf(id_nomina):
         cur.close(); conn.close()
         if not row: return jsonify({'error': 'Nómina no encontrada'}), 404
 
-        # 🛠️ CORRECCIÓN CRUCIAL DE ÍNDICES
+        # Extraer datos con índices correctos
         n = row 
         nombres = n[23] if n[23] else ''
         apellidos = n[24] if n[24] else ''
@@ -907,7 +907,7 @@ def generar_recibo_pdf(id_nomina):
         tasa_bcv = float(n[13]) if n[13] else 0
         descripcion = n[21] or "Recibo de Nómina"
 
-        # 🛠️ CONVERSIÓN A BOLÍVARES (Bs.)
+        # CONVERSIÓN A BOLÍVARES (Bs.)
         salario_mensual_bs = salario_mensual_usd * tasa_bcv
         salario_base_bs = salario_base_usd * tasa_bcv
         horas_extras_bs = horas_extras_usd * tasa_bcv
@@ -929,8 +929,8 @@ def generar_recibo_pdf(id_nomina):
         bold_style = ParagraphStyle(name='Bold', parent=normal_style, fontName='Helvetica-Bold', fontSize=9)
         title_style = ParagraphStyle(name='Title', fontSize=14, alignment=1, spaceAfter=10)
 
-        # 🆕 LOGO DE LA EMPRESA
-        logo_path = os.path.join(app.root_path, 'static', 'logo.png')
+        # 🆕 LOGO (Ahora busca en la raíz)
+        logo_path = os.path.join(app.root_path, 'logo.png')
         try:
             logo = Image(logo_path)
             logo.drawHeight = 1.2*inch
@@ -944,10 +944,9 @@ def generar_recibo_pdf(id_nomina):
             ]))
             elements.append(logo_table)
         except:
-            # Si no hay logo, solo mostramos el título
             elements.append(Paragraph(f"<b>{descripcion}</b>", title_style))
         
-        # 🛠️ ENCABEZADO ALINEADO A 2 COLUMNAS (Evita que se desajusten los datos)
+        # ENCABEZADO ALINEADO A 2 COLUMNAS
         header_data = [
             [Paragraph(f"<b>Empleado:</b> {empleado_nombre}", normal_style), Paragraph(f"<b>Cédula:</b> {cedula}", normal_style)],
             [Paragraph(f"<b>Cargo:</b> {cargo}", normal_style), Paragraph(f"<b>Período:</b> {fecha_inicio} a {fecha_fin}", normal_style)],
