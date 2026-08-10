@@ -322,7 +322,7 @@ def actualizar_parametro():
     finally: cur.close(); conn.close()
 
 # ============================================
-# CÁLCULO DE NÓMINA
+# CÁLCULO DE NÓMINA Y PASIVOS
 # ============================================
 @app.route('/api/calcular_nomina', methods=['POST'])
 @login_required
@@ -478,13 +478,13 @@ def get_lotes():
     cur.execute(query, params)
     rows = cur.fetchall(); cur.close(); conn.close()
     return jsonify([{
-        'id_lote': r[0], 'descripcion': r[1], 'fecha_calculo': r[2].isoformat(), 'total_usd': float(r[3]) if r[3] else 0,
+        'id_lote': r[0], 'descripcion': r[1], 'fecha_calculo': r[2].isoformat() if r[2] else None, 'total_usd': float(r[3]) if r[3] else 0,
         'total_bs': float(r[4]) if r[4] else 0, 'cantidad_empleados_lote': r[5],
         'sucursales_involucradas': r[7] or 'Mixto / Sin Sucursal'
     } for r in rows])
 
 # ============================================
-# 🛠️ CORRECCIÓN: DETALLE DEL LOTE CON MANEJO DE ERRORES
+# 🛠️ CORRECCIÓN DEFINITIVA: DETALLE DEL LOTE (CONSULTA EXPLÍCITA)
 # ============================================
 @app.route('/api/lotes/<int:id>', methods=['GET'])
 @login_required
@@ -498,8 +498,15 @@ def get_lote_detalle(id):
         lote_row = cur.fetchone()
         if not lote_row: return jsonify({'error': 'Lote no encontrado'}), 404
         
+        # 🛡️ CORRECCIÓN: Pedimos las columnas una por una para evitar el desfase de ALTER TABLE
         cur.execute('''
-            SELECT n.*, e.nombres, e.apellidos, e.cedula, s.id_sucursal, s.nombre as sucursal_nombre
+            SELECT 
+                n.id_nomina, n.id_empleado, n.fecha_inicio, n.fecha_fin, n.tipo, n.faltas_dias, 
+                n.salario_base_usd, n.horas_extras_usd, n.bono_complementario_usd, n.total_asignaciones_usd, 
+                n.total_deducciones_usd, n.neto_pagar_usd, n.neto_pagar_bs, n.tasa_bcv, n.fecha_calculo, 
+                n.sso_usd, n.rpe_usd, n.faov_usd, n.sso_bs, n.rpe_bs, n.faov_bs, 
+                n.descripcion, n.lote_id,
+                e.nombres, e.apellidos, e.cedula, s.id_sucursal, s.nombre as sucursal_nombre
             FROM nominas n
             JOIN empleados e ON n.id_empleado = e.id_empleado
             LEFT JOIN sucursales s ON e.sucursal_id = s.id_sucursal
