@@ -45,7 +45,7 @@ def init_db():
         conn = get_db_connection()
         if not conn: return
         cur = conn.cursor()
-        # Crear tablas (ya existentes)
+        # Crear tablas
         cur.execute('''
             CREATE TABLE IF NOT EXISTS empleados (
                 id_empleado SERIAL PRIMARY KEY, cedula TEXT UNIQUE NOT NULL, nombres TEXT NOT NULL, apellidos TEXT NOT NULL,
@@ -322,6 +322,9 @@ def actualizar_parametro():
     except Exception as e: return jsonify({'error': str(e)}), 400
     finally: cur.close(); conn.close()
 
+# ============================================
+# 🆕 MÓDULO DE CALCULAR NÓMINA (CON DIVISIÓN 60/40)
+# ============================================
 @app.route('/api/calcular_nomina', methods=['POST'])
 @login_required
 def calcular_nomina():
@@ -330,6 +333,9 @@ def calcular_nomina():
     descripcion = data.get('descripcion', '')
     empleados_ids, faltas_dict, horas_extras_dict = data.get('empleados_ids', []), data.get('faltas', {}), data.get('horas_extras', {})
     aplicar_deducciones = data.get('aplicar_deducciones', True)
+    # 🆕 Leer el nuevo interruptor de pago 60/40
+    split_60_40 = data.get('split_60_40', False)
+    
     if not fecha_inicio or not fecha_fin or not empleados_ids: return jsonify({'error': 'Faltan datos'}), 400
     conn = get_db_connection()
     if not conn: return jsonify({'error': 'Error de conexión'}), 500
@@ -378,6 +384,16 @@ def calcular_nomina():
         neto_bs = neto_usd * tasa_bcv
         total_usd_lote += neto_usd
         total_bs_lote += neto_bs
+
+        # 🆕 CÁLCULO DIVISIÓN 60/40
+        if split_60_40:
+            pago_60_usd = neto_usd * 0.60
+            pago_40_usd = neto_usd * 0.40
+            pago_60_bs = pago_60_usd * tasa_bcv
+            pago_40_bs = pago_40_usd * tasa_bcv
+        else:
+            pago_60_usd = pago_40_usd = pago_60_bs = pago_40_bs = 0.0
+
         calculo = {
             'salario_base_full_usd': salario_base_full,
             'base_incidencia_60_usd': base_incidencia_periodo,
@@ -386,10 +402,13 @@ def calcular_nomina():
             'total_deducciones_usd': total_deducciones,
             'sso_usd': ivss, 'rpe_usd': rpe, 'faov_usd': faov,
             'neto_pagar_usd': neto_usd, 'neto_pagar_bs': neto_bs,
+            'pago_60_usd': pago_60_usd, 'pago_40_usd': pago_40_usd,
+            'pago_60_bs': pago_60_bs, 'pago_40_bs': pago_40_bs,
             'faltas_dias': faltas,
             'dias_totales_periodo': total_calendar_days,
             'dias_descanso': dias_descanso,
             'dias_reales_trabajados': dias_reales_trabajados,
+            'split_60_40': split_60_40,
             'empleado': {'id': emp[0], 'cedula': cedula, 'nombre_completo': f"{emp[2]} {emp[3]}"}
         }
         resultados.append(calculo)
@@ -517,7 +536,7 @@ def eliminar_lote(id):
     finally: cur.close(); conn.close()
 
 # ============================================
-# 🆕 NUEVO ENDPOINT: GENERADOR DE RECIBO PDF
+# 🆕 ENDPOINT: GENERADOR DE RECIBO PDF (CON DIVISIÓN 60/40)
 # ============================================
 @app.route('/api/generar_recibo/<int:id_nomina>', methods=['GET'])
 @login_required
@@ -525,7 +544,6 @@ def generar_recibo_pdf(id_nomina):
     conn = get_db_connection()
     if not conn: return jsonify({'error': 'Error de conexión'}), 500
     cur = conn.cursor()
-    # Obtener datos de la nómina y el empleado
     cur.execute('''
         SELECT n.*, e.nombres, e.apellidos, e.cedula, e.cargo, e.salario_mensual_usd
         FROM nominas n
@@ -536,7 +554,6 @@ def generar_recibo_pdf(id_nomina):
     cur.close(); conn.close()
     if not row: return jsonify({'error': 'Nómina no encontrada'}), 404
 
-    # Desempaquetar datos
     n = row
     empleado_nombre = f"{n[22]} {n[23]}"
     empleado_cedula = n[24]
@@ -555,7 +572,6 @@ def generar_recibo_pdf(id_nomina):
     sso_usd = float(n[14]) if n[14] else 0
     rpe_usd = float(n[15]) if n[15] else 0
     faov_usd = float(n[16]) if n[16] else 0
-    
     tasa_bcv = float(n[12]) if n[12] else 0
     descripcion = n[20] or "Recibo de Nómina"
 
@@ -565,7 +581,6 @@ def generar_recibo_pdf(id_nomina):
     elements = []
     styles = getSampleStyleSheet()
     
-    # Estilos de texto
     title_style = ParagraphStyle(name='Title', fontSize=16, alignment=1, spaceAfter=10)
     bold_style = ParagraphStyle(name='Bold', fontSize=10, fontName='Helvetica-Bold')
     normal_style = ParagraphStyle(name='Normal', fontSize=10, fontName='Helvetica')
@@ -573,7 +588,6 @@ def generar_recibo_pdf(id_nomina):
     # 2. Encabezado del Recibo
     elements.append(Paragraph(f"<b>{descripcion}</b>", title_style))
     
-    # Información del empleado (2 columnas)
     header_data = [
         ["Empleado:", f"{empleado_nombre}", "Cédula:", f"{empleado_cedula}"],
         ["Cargo:", f"{cargo}", "Período:", f"{fecha_inicio} a {fecha_fin}"],
@@ -606,7 +620,7 @@ def generar_recibo_pdf(id_nomina):
     concept_table.setStyle(TableStyle([
         ('BACKGROUND', (0,0), (-1,0), colors.lightblue),
         ('FONTNAME', (0,0), (-1,-1), 'Helvetica'),
-        ('FONTNAME', (3,0), (3,-1), 'Helvetica-Bold'), # Columna montos en negrita
+        ('FONTNAME', (3,0), (3,-1), 'Helvetica-Bold'),
         ('ALIGN', (0,0), (0,-1), 'CENTER'),
         ('ALIGN', (2,0), (2,-1), 'CENTER'),
         ('ALIGN', (3,0), (3,-1), 'RIGHT'),
@@ -617,10 +631,18 @@ def generar_recibo_pdf(id_nomina):
     elements.append(concept_table)
     elements.append(Spacer(1, 10*mm))
 
-    # 4. Totales Finales y Pie de Página
+    # 4. 🆕 DESGLOSE DE PAGO 60/40 Y TOTALES FINALES
+    pago_60_usd = neto_usd * 0.60
+    pago_40_usd = neto_usd * 0.40
+    pago_60_bs = pago_60_usd * tasa_bcv
+    pago_40_bs = pago_40_usd * tasa_bcv
+
     footer_data = [
         ["<b>Líquido a Pagar (USD):</b>", f"<b>${neto_usd:.2f}</b>"],
         ["<b>Líquido a Pagar (Bs):</b>", f"<b>Bs. {neto_bs:.2f}</b>"],
+        ["", ""],
+        ["<b>Pago en Cuenta (60%):</b>", f"${pago_60_usd:.2f} | Bs. {pago_60_bs:.2f}"],
+        ["<b>Pago en Efectivo (40%):</b>", f"${pago_40_usd:.2f} | Bs. {pago_40_bs:.2f}"],
         ["", ""],
         ["Generado por:", "Sistema de Nómina Agroavícola del Llano"],
         ["Fecha de Emisión:", datetime.now().strftime("%d/%m/%Y %H:%M")]
