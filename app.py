@@ -4,7 +4,6 @@ from flask import Flask, request, jsonify, session, send_file
 from flask_cors import CORS
 from datetime import datetime, timedelta
 from werkzeug.security import generate_password_hash, check_password_hash
-# 🆕 Importaciones para generar PDF
 from io import BytesIO
 from reportlab.pdfgen import canvas
 from reportlab.lib.pagesizes import A4, landscape
@@ -15,7 +14,6 @@ from reportlab.lib import colors
 
 app = Flask(__name__)
 
-# Configuración de seguridad
 app.config.update(
     SECRET_KEY=os.getenv('SECRET_KEY', 'clave_super_secreta_para_nomina_2026'),
     SESSION_COOKIE_HTTPONLY=True,
@@ -45,7 +43,6 @@ def init_db():
         conn = get_db_connection()
         if not conn: return
         cur = conn.cursor()
-        # Crear tablas
         cur.execute('''
             CREATE TABLE IF NOT EXISTS empleados (
                 id_empleado SERIAL PRIMARY KEY, cedula TEXT UNIQUE NOT NULL, nombres TEXT NOT NULL, apellidos TEXT NOT NULL,
@@ -69,8 +66,8 @@ def init_db():
             CREATE TABLE IF NOT EXISTS nominas (
                 id_nomina SERIAL PRIMARY KEY, id_empleado INTEGER NOT NULL, fecha_inicio DATE NOT NULL, fecha_fin DATE NOT NULL,
                 tipo TEXT CHECK(tipo IN ('Quincenal', 'Semanal')), faltas_dias INTEGER DEFAULT 0, salario_base_usd REAL,
-                horas_extras_usd REAL DEFAULT 0, total_asignaciones_usd REAL, total_deducciones_usd REAL,
-                neto_pagar_usd REAL, neto_pagar_bs REAL, tasa_bcv REAL, fecha_calculo DATE,
+                horas_extras_usd REAL DEFAULT 0, bono_complementario_usd REAL DEFAULT 0, total_asignaciones_usd REAL,
+                total_deducciones_usd REAL, neto_pagar_usd REAL, neto_pagar_bs REAL, tasa_bcv REAL, fecha_calculo DATE,
                 sso_usd REAL DEFAULT 0, rpe_usd REAL DEFAULT 0, faov_usd REAL DEFAULT 0,
                 sso_bs REAL DEFAULT 0, rpe_bs REAL DEFAULT 0, faov_bs REAL DEFAULT 0,
                 descripcion TEXT, lote_id INTEGER
@@ -78,6 +75,8 @@ def init_db():
         ''')
         cur.execute("ALTER TABLE nominas ADD COLUMN IF NOT EXISTS descripcion TEXT")
         cur.execute("ALTER TABLE nominas ADD COLUMN IF NOT EXISTS lote_id INTEGER")
+        cur.execute("ALTER TABLE nominas ADD COLUMN IF NOT EXISTS bono_complementario_usd REAL DEFAULT 0")
+        
         cur.execute('''
             CREATE TABLE IF NOT EXISTS usuarios (
                 id SERIAL PRIMARY KEY, username TEXT UNIQUE NOT NULL, password TEXT NOT NULL
@@ -105,7 +104,6 @@ def init_db():
     except Exception as e:
         print(f"❌ ERROR GRAVE EN init_db: {e}")
 
-# Decorador de login
 def login_required(f):
     def wrapper(*args, **kwargs):
         if 'user_id' not in session:
@@ -206,7 +204,7 @@ def cambiar_password():
         cur.close(); conn.close()
 
 # ============================================
-# ENDPOINTS DE NÓMINA
+# ENDPOINTS DE NÓMINA (EMPLEADOS, SUCURSALES, PARÁMETROS)
 # ============================================
 @app.route('/api/empleados', methods=['GET'])
 @login_required
@@ -323,7 +321,7 @@ def actualizar_parametro():
     finally: cur.close(); conn.close()
 
 # ============================================
-# 🆕 MÓDULO DE CALCULAR NÓMINA (CON DIVISIÓN 60/40)
+# 🆕 MÓDULO DE CALCULAR NÓMINA (BONO EXENTO Y 100% ÍNTEGRO)
 # ============================================
 @app.route('/api/calcular_nomina', methods=['POST'])
 @login_required
@@ -332,8 +330,9 @@ def calcular_nomina():
     tipo, fecha_inicio, fecha_fin = data.get('tipo'), data.get('fecha_inicio'), data.get('fecha_fin')
     descripcion = data.get('descripcion', '')
     empleados_ids, faltas_dict, horas_extras_dict = data.get('empleados_ids', []), data.get('faltas', {}), data.get('horas_extras', {})
+    bonos_dict = data.get('bonos', {})
+    
     aplicar_deducciones = data.get('aplicar_deducciones', True)
-    # 🆕 Leer el nuevo interruptor de pago 60/40
     split_60_40 = data.get('split_60_40', False)
     
     if not fecha_inicio or not fecha_fin or not empleados_ids: return jsonify({'error': 'Faltan datos'}), 400
@@ -356,54 +355,62 @@ def calcular_nomina():
         faltas = faltas_dict.get(cedula, 0)
         horas_data = horas_extras_dict.get(cedula, {})
         horas, valor_hora = horas_data.get('horas', 0), horas_data.get('valor_hora', 0)
+        bono = bonos_dict.get(cedula, 0)
+        
         salario_mensual = float(emp[9]) if emp[9] else 0
         salario_diario_full = salario_mensual / 30
         salario_diario_incidencia = salario_mensual * 0.60 / 30
         total_horas_extras = horas * valor_hora
+        
         if tipo == 'Quincenal':
             salario_base_full = salario_mensual / 2
             base_incidencia_periodo = salario_mensual * 0.60 / 2
             dias_teoricos_trabajo = 11
             dias_descanso = 4
-            total_asignaciones = salario_base_full - (faltas * salario_diario_full) + total_horas_extras
+            total_asignaciones_base = salario_base_full - (faltas * salario_diario_full) + total_horas_extras
         else:
             dias_teoricos_trabajo = 7
             dias_descanso = 2
             salario_base_full = salario_diario_full * 7
             base_incidencia_periodo = salario_diario_incidencia * 7
-            total_asignaciones = salario_base_full - (faltas * salario_diario_full) + total_horas_extras
+            total_asignaciones_base = salario_base_full - (faltas * salario_diario_full) + total_horas_extras
+            
         dias_reales_trabajados = max(0, dias_teoricos_trabajo - faltas)
+        
         if aplicar_deducciones:
-            ivss = total_asignaciones * 0.04
-            rpe = total_asignaciones * 0.005
-            faov = total_asignaciones * 0.01
+            ivss = total_asignaciones_base * 0.04
+            rpe = total_asignaciones_base * 0.005
+            faov = total_asignaciones_base * 0.01
             total_deducciones = ivss + rpe + faov
         else:
             ivss, rpe, faov, total_deducciones = 0.0, 0.0, 0.0, 0.0
-        neto_usd = total_asignaciones - total_deducciones
-        neto_bs = neto_usd * tasa_bcv
-        total_usd_lote += neto_usd
-        total_bs_lote += neto_bs
-
-        # 🆕 CÁLCULO DIVISIÓN 60/40
+            
+        neto_base_usd = total_asignaciones_base - total_deducciones
+        # 🆕 EL BONO SE SUMA ÍNTEGRO AL NETO
+        total_neto_usd = neto_base_usd + bono
+        
         if split_60_40:
-            pago_60_usd = neto_usd * 0.60
-            pago_40_usd = neto_usd * 0.40
-            pago_60_bs = pago_60_usd * tasa_bcv
-            pago_40_bs = pago_40_usd * tasa_bcv
+            # El bono entero va al 60% (Cuenta) y no se divide
+            pago_60_usd = (neto_base_usd * 0.60) + bono
+            pago_40_usd = neto_base_usd * 0.40
         else:
-            pago_60_usd = pago_40_usd = pago_60_bs = pago_40_bs = 0.0
+            pago_60_usd = total_neto_usd
+            pago_40_usd = 0.0
+
+        total_usd_lote += total_neto_usd
+        total_bs_lote += total_neto_usd * tasa_bcv
 
         calculo = {
             'salario_base_full_usd': salario_base_full,
             'base_incidencia_60_usd': base_incidencia_periodo,
             'horas_extras_usd': total_horas_extras,
-            'total_asignaciones_usd': total_asignaciones,
+            'bono_complementario_usd': bono,
+            'total_asignaciones_base_usd': total_asignaciones_base,
             'total_deducciones_usd': total_deducciones,
             'sso_usd': ivss, 'rpe_usd': rpe, 'faov_usd': faov,
-            'neto_pagar_usd': neto_usd, 'neto_pagar_bs': neto_bs,
+            'neto_pagar_usd': total_neto_usd, 'neto_pagar_bs': total_neto_usd * tasa_bcv,
             'pago_60_usd': pago_60_usd, 'pago_40_usd': pago_40_usd,
-            'pago_60_bs': pago_60_bs, 'pago_40_bs': pago_40_bs,
+            'pago_60_bs': pago_60_usd * tasa_bcv, 'pago_40_bs': pago_40_usd * tasa_bcv,
             'faltas_dias': faltas,
             'dias_totales_periodo': total_calendar_days,
             'dias_descanso': dias_descanso,
@@ -419,9 +426,9 @@ def calcular_nomina():
     lote_id = cur.fetchone()[0]
     for emp, calculo in zip(empleados, resultados):
         cur.execute('''
-            INSERT INTO nominas (id_empleado, fecha_inicio, fecha_fin, tipo, faltas_dias, salario_base_usd, horas_extras_usd, total_asignaciones_usd, total_deducciones_usd, neto_pagar_usd, neto_pagar_bs, tasa_bcv, fecha_calculo, sso_usd, rpe_usd, faov_usd, sso_bs, rpe_bs, faov_bs, descripcion, lote_id)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-        ''', (emp[0], fecha_inicio, fecha_fin, tipo, calculo['faltas_dias'], calculo['salario_base_full_usd'], calculo['horas_extras_usd'], calculo['total_asignaciones_usd'], calculo['total_deducciones_usd'], calculo['neto_pagar_usd'], calculo['neto_pagar_bs'], tasa_bcv, datetime.now().date(), calculo['sso_usd'], calculo['rpe_usd'], calculo['faov_usd'], calculo['sso_usd'] * tasa_bcv, calculo['rpe_usd'] * tasa_bcv, calculo['faov_usd'] * tasa_bcv, descripcion, lote_id))
+            INSERT INTO nominas (id_empleado, fecha_inicio, fecha_fin, tipo, faltas_dias, salario_base_usd, horas_extras_usd, bono_complementario_usd, total_asignaciones_usd, total_deducciones_usd, neto_pagar_usd, neto_pagar_bs, tasa_bcv, fecha_calculo, sso_usd, rpe_usd, faov_usd, sso_bs, rpe_bs, faov_bs, descripcion, lote_id)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        ''', (emp[0], fecha_inicio, fecha_fin, tipo, calculo['faltas_dias'], calculo['salario_base_full_usd'], calculo['horas_extras_usd'], calculo['bono_complementario_usd'], calculo['total_asignaciones_base_usd'], calculo['total_deducciones_usd'], calculo['neto_pagar_usd'], calculo['neto_pagar_bs'], tasa_bcv, datetime.now().date(), calculo['sso_usd'], calculo['rpe_usd'], calculo['faov_usd'], calculo['sso_usd'] * tasa_bcv, calculo['rpe_usd'] * tasa_bcv, calculo['faov_usd'] * tasa_bcv, descripcion, lote_id))
     conn.commit(); cur.close(); conn.close()
     return jsonify({'tasa_bcv': tasa_bcv, 'resultados': resultados, 'lote_id': lote_id})
 
@@ -482,7 +489,7 @@ def get_lotes():
 @login_required
 def get_lote_detalle(id):
     conn = get_db_connection()
-    if not conn: return jsonify({'error': 'Error de conexión'}), 500
+    if not conn: return jsonify([])
     cur = conn.cursor()
     cur.execute("SELECT * FROM lotes_nomina WHERE id_lote = %s", (id,))
     lote_row = cur.fetchone()
@@ -503,14 +510,18 @@ def get_lote_detalle(id):
             'id_nomina': n[0], 'id_empleado': n[1], 'fecha_inicio': n[2].isoformat(), 'fecha_fin': n[3].isoformat(),
             'tipo': n[4], 'faltas_dias': n[5], 'salario_base_usd': salario_base_usd,
             'base_incidencia_60_usd': salario_base_usd * 0.60,
-            'horas_extras_usd': float(n[7]) if n[7] else 0, 'total_asignaciones_usd': float(n[8]) if n[8] else 0,
-            'total_deducciones_usd': float(n[9]) if n[9] else 0, 'neto_pagar_usd': float(n[10]) if n[10] else 0,
-            'neto_pagar_bs': float(n[11]) if n[11] else 0, 'tasa_bcv': float(n[12]) if n[12] else 0,
-            'fecha_calculo': n[13].isoformat(),
-            'sso_usd': float(n[14]) if n[14] else 0, 'rpe_usd': float(n[15]) if n[15] else 0, 'faov_usd': float(n[16]) if n[16] else 0,
-            'sso_bs': float(n[17]) if n[17] else 0, 'rpe_bs': float(n[18]) if n[18] else 0, 'faov_bs': float(n[19]) if n[19] else 0,
-            'descripcion': n[20], 'lote_id': n[21],
-            'nombres': n[22], 'apellidos': n[23], 'cedula': n[24], 'sucursal_id': n[25], 'sucursal_nombre': n[26] or 'Sin sucursal'
+            'horas_extras_usd': float(n[7]) if n[7] else 0,
+            'bono_complementario_usd': float(n[8]) if n[8] else 0,
+            'total_asignaciones_usd': float(n[9]) if n[9] else 0,
+            'total_deducciones_usd': float(n[10]) if n[10] else 0,
+            'neto_pagar_usd': float(n[11]) if n[11] else 0,
+            'neto_pagar_bs': float(n[12]) if n[12] else 0,
+            'tasa_bcv': float(n[13]) if n[13] else 0,
+            'fecha_calculo': n[14].isoformat(),
+            'sso_usd': float(n[15]) if n[15] else 0, 'rpe_usd': float(n[16]) if n[16] else 0, 'faov_usd': float(n[17]) if n[17] else 0,
+            'sso_bs': float(n[18]) if n[18] else 0, 'rpe_bs': float(n[19]) if n[19] else 0, 'faov_bs': float(n[20]) if n[20] else 0,
+            'descripcion': n[21], 'lote_id': n[22],
+            'nombres': n[23], 'apellidos': n[24], 'cedula': n[25], 'sucursal_id': n[26], 'sucursal_nombre': n[27] or 'Sin sucursal'
         })
     return jsonify({
         'id_lote': lote_row[0], 'descripcion': lote_row[1], 'fecha_calculo': lote_row[2].isoformat(),
@@ -536,7 +547,7 @@ def eliminar_lote(id):
     finally: cur.close(); conn.close()
 
 # ============================================
-# 🆕 ENDPOINT: GENERADOR DE RECIBO PDF (CON DIVISIÓN 60/40)
+# ENDPOINT: GENERADOR DE RECIBO PDF (BONO EXENTO Y 100% ÍNTEGRO)
 # ============================================
 @app.route('/api/generar_recibo/<int:id_nomina>', methods=['GET'])
 @login_required
@@ -555,25 +566,26 @@ def generar_recibo_pdf(id_nomina):
     if not row: return jsonify({'error': 'Nómina no encontrada'}), 404
 
     n = row
-    empleado_nombre = f"{n[22]} {n[23]}"
-    empleado_cedula = n[24]
-    cargo = n[25]
-    salario_mensual_usd = float(n[26]) if n[26] else 0
+    empleado_nombre = f"{n[23]} {n[24]}"
+    empleado_cedula = n[25]
+    cargo = n[26]
+    salario_mensual_usd = float(n[27]) if n[27] else 0
     
     fecha_inicio = n[2].strftime("%d/%m/%Y")
     fecha_fin = n[3].strftime("%d/%m/%Y")
     tipo = n[4]
     salario_base = float(n[6]) if n[6] else 0
     horas_extras = float(n[7]) if n[7] else 0
-    total_asignaciones = float(n[8]) if n[8] else 0
-    total_deducciones = float(n[9]) if n[9] else 0
-    neto_usd = float(n[10]) if n[10] else 0
-    neto_bs = float(n[11]) if n[11] else 0
-    sso_usd = float(n[14]) if n[14] else 0
-    rpe_usd = float(n[15]) if n[15] else 0
-    faov_usd = float(n[16]) if n[16] else 0
-    tasa_bcv = float(n[12]) if n[12] else 0
-    descripcion = n[20] or "Recibo de Nómina"
+    bono_complementario = float(n[8]) if n[8] else 0
+    total_asignaciones = float(n[9]) if n[9] else 0
+    total_deducciones = float(n[10]) if n[10] else 0
+    neto_usd = float(n[11]) if n[11] else 0
+    neto_bs = float(n[12]) if n[12] else 0
+    sso_usd = float(n[15]) if n[15] else 0
+    rpe_usd = float(n[16]) if n[16] else 0
+    faov_usd = float(n[17]) if n[17] else 0
+    tasa_bcv = float(n[13]) if n[13] else 0
+    descripcion = n[21] or "Recibo de Nómina"
 
     # 1. Crear Buffer de PDF
     buffer = BytesIO()
@@ -585,7 +597,6 @@ def generar_recibo_pdf(id_nomina):
     bold_style = ParagraphStyle(name='Bold', fontSize=10, fontName='Helvetica-Bold')
     normal_style = ParagraphStyle(name='Normal', fontSize=10, fontName='Helvetica')
 
-    # 2. Encabezado del Recibo
     elements.append(Paragraph(f"<b>{descripcion}</b>", title_style))
     
     header_data = [
@@ -605,12 +616,13 @@ def generar_recibo_pdf(id_nomina):
     elements.append(header_table)
     elements.append(Spacer(1, 10*mm))
 
-    # 3. Tabla de Conceptos
+    # 3. Tabla de Conceptos (Bono exento, no deducible)
     concept_data = [
         ["Cód.", "Concepto", "Días", "Monto (USD)"],
         ["1000", "Salario Base del Período", f"{'11' if tipo == 'Quincenal' else '5'}", f"${salario_base:.2f}"],
         ["1004", "Horas Extras", "-", f"${horas_extras:.2f}"],
-        ["---", "Total Asignaciones", "", f"<b>${total_asignaciones:.2f}</b>"],
+        ["1010", "Bono Complementario (*Exento de deducciones)", "-", f"${bono_complementario:.2f}"],
+        ["---", "Total Asignaciones", "", f"<b>${total_asignaciones + bono_complementario:.2f}</b>"],
         ["4900", "Seguro Social Obligatorio (SSO)", "-", f"(${sso_usd:.2f})"],
         ["4905", "Régimen Prestacional Empleo (RPE)", "-", f"(${rpe_usd:.2f})"],
         ["4910", "Fondo Ahorro Oblig. (FAOV)", "-", f"(${faov_usd:.2f})"],
@@ -631,18 +643,17 @@ def generar_recibo_pdf(id_nomina):
     elements.append(concept_table)
     elements.append(Spacer(1, 10*mm))
 
-    # 4. 🆕 DESGLOSE DE PAGO 60/40 Y TOTALES FINALES
-    pago_60_usd = neto_usd * 0.60
-    pago_40_usd = neto_usd * 0.40
-    pago_60_bs = pago_60_usd * tasa_bcv
-    pago_40_bs = pago_40_usd * tasa_bcv
+    # 4. DESGLOSE DE PAGO 60/40 Y TOTALES FINALES
+    neto_base = neto_usd - bono_complementario
+    pago_60_usd = (neto_base * 0.60) + bono_complementario
+    pago_40_usd = neto_base * 0.40
 
     footer_data = [
         ["<b>Líquido a Pagar (USD):</b>", f"<b>${neto_usd:.2f}</b>"],
         ["<b>Líquido a Pagar (Bs):</b>", f"<b>Bs. {neto_bs:.2f}</b>"],
         ["", ""],
-        ["<b>Pago en Cuenta (60%):</b>", f"${pago_60_usd:.2f} | Bs. {pago_60_bs:.2f}"],
-        ["<b>Pago en Efectivo (40%):</b>", f"${pago_40_usd:.2f} | Bs. {pago_40_bs:.2f}"],
+        ["<b>Pago en Cuenta (60% + Bono 100%):</b>", f"${pago_60_usd:.2f} | Bs. {pago_60_usd * tasa_bcv:.2f}"],
+        ["<b>Pago en Efectivo (40%):</b>", f"${pago_40_usd:.2f} | Bs. {pago_40_usd * tasa_bcv:.2f}"],
         ["", ""],
         ["Generado por:", "Sistema de Nómina Agroavícola del Llano"],
         ["Fecha de Emisión:", datetime.now().strftime("%d/%m/%Y %H:%M")]
@@ -658,7 +669,6 @@ def generar_recibo_pdf(id_nomina):
     ]))
     elements.append(footer_table)
 
-    # Construir el PDF
     doc.build(elements)
     buffer.seek(0)
     
