@@ -424,7 +424,7 @@ def actualizar_bcv():
         return jsonify({'error': str(e)}), 500
 
 # ============================================
-# CÁLCULO DE NÓMINA Y PASIVOS (CON MODO "SOLO BONO")
+# CÁLCULO DE NÓMINA Y PASIVOS
 # ============================================
 @app.route('/api/calcular_nomina', methods=['POST'])
 @login_required
@@ -436,11 +436,9 @@ def calcular_nomina():
     bonos_dict = data.get('bonos', {})
     aplicar_deducciones = data.get('aplicar_deducciones', True)
     split_60_40 = data.get('split_60_40', False)
-    calcular_solo_bono = data.get('calcular_solo_bono', False) # 🆕 Nuevo flag
+    calcular_solo_bono = data.get('calcular_solo_bono', False)
     
     if not fecha_inicio or not fecha_fin or not empleados_ids: return jsonify({'error': 'Faltan datos'}), 400
-    
-    # Si es solo bono, no necesitamos tasa ni consultar salario base real, pero sí la tasa para el resultado
     conn = get_db_connection()
     if not conn: return jsonify({'error': 'Error de conexión'}), 500
     cur = conn.cursor()
@@ -467,7 +465,6 @@ def calcular_nomina():
         salario_mensual = float(emp[9]) if emp[9] else 0
         
         if calcular_solo_bono:
-            # 🆕 Lógica Solo Bono: Ignoramos salario, horario y faltas
             salario_base_full = 0
             base_incidencia_periodo = 0
             total_horas_extras = 0
@@ -475,7 +472,6 @@ def calcular_nomina():
             dias_teoricos_trabajo = 0
             dias_descanso = 0
         else:
-            # Lógica Estándar
             salario_diario_full = salario_mensual / 30
             salario_diario_incidencia = salario_mensual * 0.60 / 30
             total_horas_extras = horas * valor_hora
@@ -501,16 +497,11 @@ def calcular_nomina():
             ivss, rpe, faov, total_deducciones = 0.0, 0.0, 0.0, 0.0
             
         neto_base_usd = total_asignaciones_base - total_deducciones
-        total_neto_usd = neto_base_usd + bono # El bono ya está sumado en total_asignaciones_base si es solo bono, o se suma aquí. Mejor mantener la suma limpia para el estándar.
         if calcular_solo_bono:
-            # Para solo bono, el neto es el bono menos deducciones + bono? No, el neto es igual a total_asignaciones_base - total_deducciones.
             total_neto_usd = bono - total_deducciones
         else:
             total_neto_usd = (total_asignaciones_base) - total_deducciones
 
-        # Si la lógica estándar suma bono, revisar. El estándar solo suma el bono si se pasa como extra. Pero en el data, el bono ya está sumado en total_asignaciones_base? Sí, en el bloque estándar.
-        
-        # Limpiando la lógica final:
         if calcular_solo_bono:
             dias_reales_trabajados = 0
             salario_base_full = 0
@@ -777,7 +768,7 @@ def generar_archivo_pago(lote_id):
         return jsonify({'error': f'Error interno generando el archivo de pago: {str(e)}'}), 500
 
 # ============================================
-# 🆕 GENERADOR DE PDF DEL LOTE COMPLETO
+# 🆕 GENERADOR DE PDF DEL LOTE COMPLETO (CORREGIDO HTML TAGS)
 # ============================================
 @app.route('/api/generar_lote_pdf/<int:lote_id>', methods=['GET'])
 @login_required
@@ -805,13 +796,17 @@ def generar_lote_pdf(lote_id):
         doc = SimpleDocTemplate(buffer, pagesize=A4, leftMargin=20*mm, rightMargin=20*mm, topMargin=20*mm, bottomMargin=20*mm)
         elements = []
         styles = getSampleStyleSheet()
+        normal_style = styles['Normal']
         title_style = ParagraphStyle(name='Title', fontSize=16, alignment=1, spaceAfter=10)
+        
         elements.append(Paragraph(f"<b>Nómina Agroavícola del Llano</b>", title_style))
-        elements.append(Paragraph(f"<b>Lote #{lote_row[0]} - {lote_row[1] or 'Sin descripción'}</b><br/><small>Generado el {lote_row[2].strftime('%d/%m/%Y')}</small>", styles['Normal']))
+        elements.append(Paragraph(f"<b>Lote #{lote_row[0]} - {lote_row[1] or 'Sin descripción'}</b><br/><small>Generado el {lote_row[2].strftime('%d/%m/%Y')}</small>", normal_style))
         elements.append(Spacer(1, 10*mm))
+        
         data = [["Cédula", "Empleado", "Cargo", "Salario Mensual", "Neto USD", "Neto Bs"]]
         total_usd = 0.0
         total_bs = 0.0
+        
         for row in nominas_rows:
             nombre = f"{row[5]} {row[6]}"
             neto_usd = float(row[1]) if row[1] else 0
@@ -819,7 +814,15 @@ def generar_lote_pdf(lote_id):
             total_usd += neto_usd
             total_bs += neto_bs
             data.append([row[7], nombre, row[8] or '', f"${float(row[9]):.2f}" if row[9] else '', f"${neto_usd:.2f}", f"Bs. {neto_bs:.2f}"])
-        data.append(["", "", "", "<b>TOTAL GENERAL</b>", f"<b>${total_usd:.2f}</b>", f"<b>Bs. {total_bs:.2f}</b>"])
+        
+        # 🛠️ CORRECCIÓN: Usar Paragraph para renderizar el HTML en negrita correctamente
+        data.append([
+            "", "", "", 
+            Paragraph("<b>TOTAL GENERAL</b>", normal_style), 
+            Paragraph(f"<b>${total_usd:.2f}</b>", normal_style), 
+            Paragraph(f"<b>Bs. {total_bs:.2f}</b>", normal_style)
+        ])
+
         table = Table(data, colWidths=[80, 130, 120, 100, 80, 80])
         table.setStyle(TableStyle([
             ('BACKGROUND', (0,0), (-1,0), colors.lightblue),
@@ -829,6 +832,7 @@ def generar_lote_pdf(lote_id):
             ('FONTNAME', (0,-1), (-1,-1), 'Helvetica-Bold'),
         ]))
         elements.append(table)
+        
         doc.build(elements)
         buffer.seek(0)
         return send_file(buffer, as_attachment=True, download_name=f"lote_{lote_id}.pdf", mimetype='application/pdf')
@@ -846,7 +850,6 @@ def generar_recibo_pdf(id_nomina):
         conn = get_db_connection()
         if not conn: return jsonify({'error': 'Error de conexión'}), 500
         cur = conn.cursor()
-        # Pedir las columnas una por una para evitar errores de índice
         cur.execute('''
             SELECT 
                 n.id_nomina, n.id_empleado, n.fecha_inicio, n.fecha_fin, n.tipo, n.faltas_dias, 
@@ -869,7 +872,8 @@ def generar_recibo_pdf(id_nomina):
         empleado_nombre = f"{n[24]} {n[25]}" # nombres y apellidos
         empleado_cedula = n[26] # cedula
         cargo = n[27] # cargo
-        salario_mensual_usd = float(n[28]) if n[28] else 0 # salario_mensual_usd
+        # 🛠️ CORRECCIÓN CRUCIAL: El índice 27 es el salario, no 28.
+        salario_mensual_usd = float(n[27]) if n[27] else 0 
         
         fecha_inicio = n[2].strftime("%d/%m/%Y") if n[2] else ''
         fecha_fin = n[3].strftime("%d/%m/%Y") if n[3] else ''
