@@ -673,7 +673,7 @@ def get_lote_detalle(id):
         return jsonify({'error': f'Error interno del servidor: {str(e)}'}), 500
 
 # ============================================
-# 🏦 GENERADOR DE ARCHIVO TXT PARA EL BANCO 
+# 🏦 GENERADOR DE ARCHIVO TXT PARA EL BANCO (ACTUALIZADO CON 100%)
 # ============================================
 @app.route('/api/generar_archivo_pago/<int:lote_id>', methods=['GET'])
 @login_required
@@ -718,6 +718,21 @@ def generar_archivo_pago(lote_id):
                     e.nombres, 
                     e.apellidos,
                     (n.neto_pagar_usd * 0.40) * n.tasa_bcv as monto_pago_bs
+                FROM nominas n
+                JOIN empleados e ON n.id_empleado = e.id_empleado
+                WHERE n.lote_id = %s 
+                  AND e.cuenta_bancaria IS NOT NULL 
+                  AND e.cuenta_bancaria != ''
+            ''', (lote_id,))
+        # 🆕 NUEVO TIPO: 100% DEL MONTO TOTAL
+        elif tipo == '100':
+            cur.execute('''
+                SELECT 
+                    e.cedula, 
+                    e.cuenta_bancaria, 
+                    e.nombres, 
+                    e.apellidos,
+                    n.neto_pagar_usd * n.tasa_bcv as monto_pago_bs
                 FROM nominas n
                 JOIN empleados e ON n.id_empleado = e.id_empleado
                 WHERE n.lote_id = %s 
