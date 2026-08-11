@@ -644,16 +644,29 @@ def calcular_cestaticket():
     fecha_inicio, fecha_fin = data.get('fecha_inicio'), data.get('fecha_fin')
     descripcion = data.get('descripcion', '')
     empleados_ids = data.get('empleados_ids', [])
+    # 🆕 Faltas por empleado (opcional)
+    faltas_dict = data.get('faltas', {})
 
-    if not fecha_inicio or not fecha_fin or not empleados_ids: return jsonify({'error': 'Faltan datos'}), 400
+    if not fecha_inicio or not fecha_fin or not empleados_ids:
+        return jsonify({'error': 'Faltan datos'}), 400
+    
     conn = get_db_connection()
-    if not conn: return jsonify({'error': 'Error de conexión'}), 500
+    if not conn:
+        return jsonify({'error': 'Error de conexión'}), 500
+    
     cur = conn.cursor()
+    
+    # Obtener tasa BCV
     cur.execute("SELECT valor FROM parametros WHERE clave = 'tasa_bcv'")
-    tasa_row = cur.fetchone(); tasa_bcv = float(tasa_row[0]) if tasa_row else 755.1552
+    tasa_row = cur.fetchone()
+    tasa_bcv = float(tasa_row[0]) if tasa_row else 755.1552
+    
+    # Obtener valor del cestaticket
     cur.execute("SELECT valor FROM parametros WHERE clave = 'cestaticket_usd'")
-    valor_row = cur.fetchone(); valor_diario_usd = float(valor_row[0]) if valor_row else 40.0
+    valor_row = cur.fetchone()
+    valor_diario_usd = float(valor_row[0]) if valor_row else 40.0
 
+    # Obtener empleados
     placeholders = ','.join(['%s'] * len(empleados_ids))
     cur.execute(f"SELECT * FROM empleados WHERE id_empleado IN ({placeholders})", empleados_ids)
     empleados = cur.fetchall()
@@ -661,46 +674,117 @@ def calcular_cestaticket():
     resultados = []
     total_bs_lote = 0.0
     
+    # 📌 NUEVO: Calcular días hábiles del período (Lunes a Viernes)
     start_date = datetime.strptime(fecha_inicio, "%Y-%m-%d").date()
     end_date = datetime.strptime(fecha_fin, "%Y-%m-%d").date()
     
-    # Calcular días hábiles (Lunes a Viernes)
-    working_days = 0
+    # Contar días hábiles totales del período
+    total_working_days = 0
     current_day = start_date
     while current_day <= end_date:
-        if current_day.weekday() < 5:
-            working_days += 1
+        if current_day.weekday() < 5:  # 0=Lunes, 4=Viernes
+            total_working_days += 1
         current_day += timedelta(days=1)
 
+    # 📌 Si el período es menor a 30 días, usar los días del período
+    # 📌 Si el período es mayor o igual a 30 días, usar 30 días (Ley Cestaticket)
+    if total_working_days >= 30:
+        dias_a_pagar = 30
+    else:
+        dias_a_pagar = total_working_days
+
     for emp in empleados:
-        total_usd = working_days * valor_diario_usd
+        cedula = emp[1]
+        
+        # 🆕 Obtener faltas del empleado (si se enviaron)
+        faltas = faltas_dict.get(str(emp[0]), 0)
+        if isinstance(faltas, str):
+            faltas = int(faltas) if faltas.isdigit() else 0
+        
+        # 📌 Calcular días a pagar (restando faltas)
+        dias_pagados = max(0, dias_a_pagar - faltas)
+        
+        # Calcular montos
+        total_usd = dias_pagados * valor_diario_usd
         total_bs = total_usd * tasa_bcv
         total_bs_lote += total_bs
 
         calculo = {
-            'dias_pagados': working_days,
+            'id_empleado': emp[0],
+            'cedula': cedula,
+            'nombre_completo': f"{emp[2]} {emp[3]}",
+            'dias_totales_periodo': total_working_days,
+            'dias_a_pagar_ley': dias_a_pagar,
+            'faltas': faltas,
+            'dias_pagados': dias_pagados,
             'valor_diario_usd': valor_diario_usd,
             'total_usd': total_usd,
-            'total_bs': total_bs,
-            'empleado': {'id': emp[0], 'cedula': emp[1], 'nombre_completo': f"{emp[2]} {emp[3]}"}
+            'total_bs': total_bs
         }
         resultados.append(calculo)
 
+    # Guardar lote
     cur.execute('''
         INSERT INTO cestaticket_lotes (descripcion, fecha_calculo, total_bs, cantidad_empleados, tasa_bcv)
         VALUES (%s, %s, %s, %s, %s) RETURNING id_lote
     ''', (descripcion, datetime.now().date(), total_bs_lote, len(empleados), tasa_bcv))
     lote_id = cur.fetchone()[0]
 
-    for emp, calculo in zip(empleados, resultados):
+    # Guardar detalles
+    for calc in resultados:
         cur.execute('''
-            INSERT INTO cestaticket_nominas (id_empleado, fecha_inicio, fecha_fin, dias_pagados, valor_diario_usd, tasa_bcv, total_usd, total_bs, descripcion, lote_id)
+            INSERT INTO cestaticket_nominas (
+                id_empleado, fecha_inicio, fecha_fin, dias_pagados, 
+                valor_diario_usd, tasa_bcv, total_usd, total_bs, descripcion, lote_id
+            )
             VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-        ''', (emp[0], fecha_inicio, fecha_fin, calculo['dias_pagados'], valor_diario_usd, tasa_bcv, calculo['total_usd'], calculo['total_bs'], descripcion, lote_id))
+        ''', (
+            calc['id_empleado'], fecha_inicio, fecha_fin, 
+            calc['dias_pagados'], valor_diario_usd, tasa_bcv, 
+            calc['total_usd'], calc['total_bs'], descripcion, lote_id
+        ))
 
-    conn.commit(); cur.close(); conn.close()
-    return jsonify({'tasa_bcv': tasa_bcv, 'valor_diario_usd': valor_diario_usd, 'resultados': resultados, 'lote_id': lote_id})
-
+    conn.commit()
+    cur.close()
+    conn.close()
+    
+    return jsonify({
+        'tasa_bcv': tasa_bcv,
+        'valor_diario_usd': valor_diario_usd,
+        'dias_base_ley': dias_a_pagar,
+        'total_working_days': total_working_days,
+        'resultados': resultados,
+        'lote_id': lote_id
+    })
+@app.route('/api/dias_habiles', methods=['POST'])
+@login_required
+def calcular_dias_habiles():
+    data = request.json
+    fecha_inicio = data.get('fecha_inicio')
+    fecha_fin = data.get('fecha_fin')
+    
+    if not fecha_inicio or not fecha_fin:
+        return jsonify({'error': 'Fechas requeridas'}), 400
+    
+    start_date = datetime.strptime(fecha_inicio, "%Y-%m-%d").date()
+    end_date = datetime.strptime(fecha_fin, "%Y-%m-%d").date()
+    
+    total_working_days = 0
+    current_day = start_date
+    while current_day <= end_date:
+        if current_day.weekday() < 5:
+            total_working_days += 1
+        current_day += timedelta(days=1)
+    
+    dias_a_pagar = min(total_working_days, 30)
+    
+    return jsonify({
+        'fecha_inicio': fecha_inicio,
+        'fecha_fin': fecha_fin,
+        'dias_habiles': total_working_days,
+        'dias_a_pagar_ley': dias_a_pagar,
+        'observacion': 'Máximo 30 días según Ley Cestaticket' if total_working_days > 30 else ''
+    })
 # ============================================
 # HISTORIAL Y DETALLE CESTATICKET
 # ============================================
