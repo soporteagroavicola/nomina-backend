@@ -24,7 +24,6 @@ app.config.update(
     SESSION_COOKIE_NAME='nomina_session'
 )
 
-# ✅ CORRECCIÓN: URLs permitidas para CORS
 frontend_urls = [
     "https://nomina-frontend.onrender.com",
     "https://soporteagroavicola.github.io",
@@ -56,7 +55,6 @@ def init_db():
         if not conn: return
         cur = conn.cursor()
         
-        # Tablas existentes
         cur.execute('''
             CREATE TABLE IF NOT EXISTS empleados (
                 id_empleado SERIAL PRIMARY KEY, cedula TEXT UNIQUE NOT NULL, nombres TEXT NOT NULL, apellidos TEXT NOT NULL,
@@ -126,7 +124,6 @@ def init_db():
         for clave, valor in parametros_default:
             cur.execute("INSERT INTO parametros (clave, valor) VALUES (%s, %s) ON CONFLICT (clave) DO UPDATE SET valor = EXCLUDED.valor", (clave, valor))
 
-        # Tablas para CESTATICKET
         cur.execute('''
             CREATE TABLE IF NOT EXISTS cestaticket_lotes (
                 id_lote SERIAL PRIMARY KEY,
@@ -158,7 +155,6 @@ def init_db():
     except Exception as e:
         print(f"❌ ERROR GRAVE EN init_db: {e}")
 
-# ✅ NUEVO ENDPOINT: Health Check
 @app.route('/api/health', methods=['GET'])
 def health_check():
     return jsonify({'status': 'ok', 'timestamp': datetime.now().isoformat()})
@@ -635,7 +631,7 @@ def calcular_pasivos():
     })
 
 # ============================================
-# ENDPOINT: CÁLCULO DE CESTATICKET
+# 🆕 ENDPOINT: CÁLCULO DE CESTATICKET (CORREGIDO)
 # ============================================
 @app.route('/api/calcular_cestaticket', methods=['POST'])
 @login_required
@@ -644,7 +640,6 @@ def calcular_cestaticket():
     fecha_inicio, fecha_fin = data.get('fecha_inicio'), data.get('fecha_fin')
     descripcion = data.get('descripcion', '')
     empleados_ids = data.get('empleados_ids', [])
-    # 🆕 Faltas por empleado (opcional)
     faltas_dict = data.get('faltas', {})
 
     if not fecha_inicio or not fecha_fin or not empleados_ids:
@@ -661,10 +656,13 @@ def calcular_cestaticket():
     tasa_row = cur.fetchone()
     tasa_bcv = float(tasa_row[0]) if tasa_row else 755.1552
     
-    # Obtener valor del cestaticket
+    # Obtener valor del cestaticket (mensual en USD)
     cur.execute("SELECT valor FROM parametros WHERE clave = 'cestaticket_usd'")
     valor_row = cur.fetchone()
-    valor_diario_usd = float(valor_row[0]) if valor_row else 40.0
+    valor_mensual_usd = float(valor_row[0]) if valor_row else 40.0  # $40 USD mensuales
+
+    # 📌 Calcular valor por día (40 / 30 = 1.3333)
+    valor_diario_usd = valor_mensual_usd / 30
 
     # Obtener empleados
     placeholders = ','.join(['%s'] * len(empleados_ids))
@@ -674,11 +672,10 @@ def calcular_cestaticket():
     resultados = []
     total_bs_lote = 0.0
     
-    # 📌 NUEVO: Calcular días hábiles del período (Lunes a Viernes)
+    # Calcular días hábiles del período (solo para mostrar información)
     start_date = datetime.strptime(fecha_inicio, "%Y-%m-%d").date()
     end_date = datetime.strptime(fecha_fin, "%Y-%m-%d").date()
     
-    # Contar días hábiles totales del período
     total_working_days = 0
     current_day = start_date
     while current_day <= end_date:
@@ -686,38 +683,40 @@ def calcular_cestaticket():
             total_working_days += 1
         current_day += timedelta(days=1)
 
-    # 📌 Si el período es menor a 30 días, usar los días del período
-    # 📌 Si el período es mayor o igual a 30 días, usar 30 días (Ley Cestaticket)
-    if total_working_days >= 30:
-        dias_a_pagar = 30
-    else:
-        dias_a_pagar = total_working_days
-
     for emp in empleados:
-        cedula = emp[1]
+        emp_id = emp[0]
         
-        # 🆕 Obtener faltas del empleado (si se enviaron)
-        faltas = faltas_dict.get(str(emp[0]), 0)
+        # Obtener faltas del empleado
+        faltas = faltas_dict.get(str(emp_id), 0)
         if isinstance(faltas, str):
             faltas = int(faltas) if faltas.isdigit() else 0
+        elif not isinstance(faltas, int):
+            faltas = 0
         
-        # 📌 Calcular días a pagar (restando faltas)
-        dias_pagados = max(0, dias_a_pagar - faltas)
+        # 📌 CÁLCULO CORRECTO SEGÚN LEY:
+        # 1. Base mensual: $40 USD (valor_mensual_usd)
+        # 2. Descontar: faltas * (40 / 30) = faltas * 1.3333
+        # 3. Total USD = 40 - (faltas * 1.3333)
+        # 4. Total Bs = Total USD * tasa_bcv
         
-        # Calcular montos
-        total_usd = dias_pagados * valor_diario_usd
+        descuento_usd = faltas * valor_diario_usd
+        total_usd = valor_mensual_usd - descuento_usd
+        if total_usd < 0:
+            total_usd = 0  # No puede ser negativo
+        
         total_bs = total_usd * tasa_bcv
         total_bs_lote += total_bs
 
         calculo = {
-            'id_empleado': emp[0],
-            'cedula': cedula,
+            'id_empleado': emp_id,
+            'cedula': emp[1],
             'nombre_completo': f"{emp[2]} {emp[3]}",
             'dias_totales_periodo': total_working_days,
-            'dias_a_pagar_ley': dias_a_pagar,
-            'faltas': faltas,
-            'dias_pagados': dias_pagados,
+            'valor_mensual_usd': valor_mensual_usd,
             'valor_diario_usd': valor_diario_usd,
+            'faltas': faltas,
+            'descuento_usd': descuento_usd,
+            'dias_pagados': max(0, 30 - faltas),
             'total_usd': total_usd,
             'total_bs': total_bs
         }
@@ -750,41 +749,13 @@ def calcular_cestaticket():
     
     return jsonify({
         'tasa_bcv': tasa_bcv,
+        'valor_mensual_usd': valor_mensual_usd,
         'valor_diario_usd': valor_diario_usd,
-        'dias_base_ley': dias_a_pagar,
         'total_working_days': total_working_days,
         'resultados': resultados,
         'lote_id': lote_id
     })
-@app.route('/api/dias_habiles', methods=['POST'])
-@login_required
-def calcular_dias_habiles():
-    data = request.json
-    fecha_inicio = data.get('fecha_inicio')
-    fecha_fin = data.get('fecha_fin')
-    
-    if not fecha_inicio or not fecha_fin:
-        return jsonify({'error': 'Fechas requeridas'}), 400
-    
-    start_date = datetime.strptime(fecha_inicio, "%Y-%m-%d").date()
-    end_date = datetime.strptime(fecha_fin, "%Y-%m-%d").date()
-    
-    total_working_days = 0
-    current_day = start_date
-    while current_day <= end_date:
-        if current_day.weekday() < 5:
-            total_working_days += 1
-        current_day += timedelta(days=1)
-    
-    dias_a_pagar = min(total_working_days, 30)
-    
-    return jsonify({
-        'fecha_inicio': fecha_inicio,
-        'fecha_fin': fecha_fin,
-        'dias_habiles': total_working_days,
-        'dias_a_pagar_ley': dias_a_pagar,
-        'observacion': 'Máximo 30 días según Ley Cestaticket' if total_working_days > 30 else ''
-    })
+
 # ============================================
 # HISTORIAL Y DETALLE CESTATICKET
 # ============================================
@@ -994,7 +965,6 @@ def generar_recibo_cestaticket(id):
         bold_style = ParagraphStyle(name='Bold', parent=normal_style, fontName='Helvetica-Bold', fontSize=9)
         title_style = ParagraphStyle(name='Title', fontSize=14, alignment=1, spaceAfter=10)
 
-        # Logo
         logo_path = os.path.join(app.root_path, 'logo.png')
         try:
             logo = Image(logo_path)
@@ -1014,7 +984,7 @@ def generar_recibo_cestaticket(id):
         header_data = [
             [Paragraph(f"<b>Empleado:</b> {empleado_nombre}", normal_style), Paragraph(f"<b>Cédula:</b> {empleado_cedula}", normal_style)],
             [Paragraph(f"<b>Cargo:</b> {cargo}", normal_style), Paragraph(f"<b>Período:</b> {fecha_inicio} a {fecha_fin}", normal_style)],
-            [Paragraph(f"<b>Tasa BCV:</b> Bs. {tasa_bcv:.4f}", normal_style), Paragraph(f"<b>Valor Día (USD):</b> ${valor_diario_usd:.2f}", normal_style)],
+            [Paragraph(f"<b>Tasa BCV:</b> Bs. {tasa_bcv:.4f}", normal_style), Paragraph(f"<b>Valor Día (USD):</b> ${valor_diario_usd:.4f}", normal_style)],
         ]
         header_table = Table(header_data, colWidths=[250, 250])
         header_table.setStyle(TableStyle([
@@ -1026,9 +996,10 @@ def generar_recibo_cestaticket(id):
 
         concept_data = [
             [Paragraph("<b>Concepto</b>", bold_style), Paragraph("<b>Valor</b>", bold_style)],
+            [Paragraph("Valor Mensual (Ley)", normal_style), Paragraph(f"${total_usd + (dias_pagados * valor_diario_usd):.2f} USD", normal_style)],
             [Paragraph("Días Pagados", normal_style), Paragraph(f"{dias_pagados} días", normal_style)],
             [Paragraph("Total a Pagar (USD)", normal_style), Paragraph(f"${total_usd:.2f}", normal_style)],
-            [Paragraph("Total a Pagar (Bs)", normal_style), Paragraph(f"Bs. {total_bs:.2f}", normal_style)],
+            [Paragraph("Total a Pagar (Bs)", normal_style), Paragraph(f"Bs. {total_bs:.2f}", bold_style)],
         ]
         concept_table = Table(concept_data, colWidths=[220, 200])
         concept_table.setStyle(TableStyle([
@@ -1323,7 +1294,7 @@ def eliminar_lote(id):
         cur.close(); conn.close()
 
 # ============================================
-# HISTORIAL DE NÓMINAS (CORREGIDO)
+# HISTORIAL DE NÓMINAS
 # ============================================
 @app.route('/api/lotes', methods=['GET'])
 @login_required
