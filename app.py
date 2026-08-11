@@ -640,6 +640,7 @@ def calcular_cestaticket():
     fecha_inicio, fecha_fin = data.get('fecha_inicio'), data.get('fecha_fin')
     descripcion = data.get('descripcion', '')
     empleados_ids = data.get('empleados_ids', [])
+    # 📌 CORREGIDO: Recibir faltas correctamente
     faltas_dict = data.get('faltas', {})
 
     if not fecha_inicio or not fecha_fin or not empleados_ids:
@@ -659,9 +660,9 @@ def calcular_cestaticket():
     # Obtener valor del cestaticket (mensual en USD)
     cur.execute("SELECT valor FROM parametros WHERE clave = 'cestaticket_usd'")
     valor_row = cur.fetchone()
-    valor_mensual_usd = float(valor_row[0]) if valor_row else 40.0  # $40 USD mensuales
+    valor_mensual_usd = float(valor_row[0]) if valor_row else 40.0
 
-    # 📌 Calcular valor por día (40 / 30 = 1.3333)
+    # Calcular valor por día (40 / 30 = 1.3333)
     valor_diario_usd = valor_mensual_usd / 30
 
     # Obtener empleados
@@ -679,22 +680,29 @@ def calcular_cestaticket():
     total_working_days = 0
     current_day = start_date
     while current_day <= end_date:
-        if current_day.weekday() < 5:  # 0=Lunes, 4=Viernes
+        if current_day.weekday() < 5:
             total_working_days += 1
         current_day += timedelta(days=1)
 
     for emp in empleados:
-        emp_id = emp[0]
+        emp_id = str(emp[0])  # Convertir a string para coincidir con el frontend
         
-        # Obtener faltas del empleado
-        faltas = faltas_dict.get(str(emp_id), 0)
+        # 📌 CORREGIDO: Obtener faltas del empleado correctamente
+        faltas = faltas_dict.get(emp_id, 0)
+        
+        # Si es string, convertir a int
         if isinstance(faltas, str):
-            faltas = int(faltas) if faltas.isdigit() else 0
-        elif not isinstance(faltas, int):
+            try:
+                faltas = int(faltas) if faltas.isdigit() else 0
+            except:
+                faltas = 0
+        elif not isinstance(faltas, (int, float)):
             faltas = 0
+        else:
+            faltas = int(faltas)
         
-        # 📌 CÁLCULO CORRECTO SEGÚN LEY:
-        # 1. Base mensual: $40 USD (valor_mensual_usd)
+        # 📌 CÁLCULO CORRECTO SEGÚN LEY
+        # 1. Base mensual: $40 USD
         # 2. Descontar: faltas * (40 / 30) = faltas * 1.3333
         # 3. Total USD = 40 - (faltas * 1.3333)
         # 4. Total Bs = Total USD * tasa_bcv
@@ -702,13 +710,13 @@ def calcular_cestaticket():
         descuento_usd = faltas * valor_diario_usd
         total_usd = valor_mensual_usd - descuento_usd
         if total_usd < 0:
-            total_usd = 0  # No puede ser negativo
+            total_usd = 0
         
         total_bs = total_usd * tasa_bcv
         total_bs_lote += total_bs
 
         calculo = {
-            'id_empleado': emp_id,
+            'id_empleado': emp[0],
             'cedula': emp[1],
             'nombre_completo': f"{emp[2]} {emp[3]}",
             'dias_totales_periodo': total_working_days,
@@ -996,7 +1004,7 @@ def generar_recibo_cestaticket(id):
 
         concept_data = [
             [Paragraph("<b>Concepto</b>", bold_style), Paragraph("<b>Valor</b>", bold_style)],
-            [Paragraph("Valor Mensual (Ley)", normal_style), Paragraph(f"${total_usd + (dias_pagados * valor_diario_usd):.2f} USD", normal_style)],
+            [Paragraph("Valor Mensual (Ley)", normal_style), Paragraph(f"${valor_mensual_usd:.2f} USD", normal_style)],
             [Paragraph("Días Pagados", normal_style), Paragraph(f"{dias_pagados} días", normal_style)],
             [Paragraph("Total a Pagar (USD)", normal_style), Paragraph(f"${total_usd:.2f}", normal_style)],
             [Paragraph("Total a Pagar (Bs)", normal_style), Paragraph(f"Bs. {total_bs:.2f}", bold_style)],
