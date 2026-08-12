@@ -1063,7 +1063,7 @@ def generar_recibo_cestaticket(id):
         return jsonify({'error': str(e)}), 500
 
 # ============================================
-# 🆕 RECIBO CESTATICKET PARA MATRIZ DE PUNTO
+# RECIBO CESTATICKET PARA MATRIZ DE PUNTO
 # ============================================
 @app.route('/api/generar_recibo_cestaticket_matriz/<int:id>', methods=['GET'])
 @login_required
@@ -1078,7 +1078,6 @@ def generar_recibo_cestaticket_matriz(id):
             return jsonify({'error': 'Error de conexión'}), 500
         cur = conn.cursor()
         
-        # Obtener datos del cestaticket
         cur.execute('''
             SELECT 
                 c.id, 
@@ -1109,7 +1108,6 @@ def generar_recibo_cestaticket_matriz(id):
         if not row:
             return jsonify({'error': 'Cestaticket no encontrado'}), 404
 
-        # Obtener parámetros de la empresa
         conn = get_db_connection()
         if conn:
             cur = conn.cursor()
@@ -1132,7 +1130,6 @@ def generar_recibo_cestaticket_matriz(id):
             tasa_bcv = 755.1552
             valor_mensual_usd = 40.0
 
-        # Datos del empleado
         nombres = row[11] or ''
         apellidos = row[12] or ''
         nombre_completo = f"{nombres} {apellidos}".strip()
@@ -1140,94 +1137,54 @@ def generar_recibo_cestaticket_matriz(id):
         cargo = row[14] or ''
         fecha_ingreso = row[15].strftime("%d/%m/%Y") if row[15] else ''
         
-        # Datos del cálculo
         fecha_inicio = row[2].strftime("%d/%m/%Y") if row[2] else ''
         fecha_fin = row[3].strftime("%d/%m/%Y") if row[3] else ''
         dias_pagados = row[4] if row[4] else 30
         valor_diario_usd = float(row[5]) if row[5] else (valor_mensual_usd / 30)
-        total_usd = float(row[7]) if row[7] else 0
         total_bs = float(row[8]) if row[8] else 0
         descripcion = row[9] or "Cestaticket"
-        lote_id = row[10]
         
-        # Calcular valor diario en Bs
         valor_diario_bs = valor_diario_usd * tasa_bcv
         
-        # Calcular total en Bs basado en días pagados
         total_bs_calculado = dias_pagados * valor_diario_usd * tasa_bcv
-        
-        # Usar el total_bs de la BD o el calculado
         if total_bs == 0:
             total_bs = total_bs_calculado
         
-        # Fecha actual
         fecha_actual = datetime.now().strftime("%d/%m/%Y")
-        hora_actual = datetime.now().strftime("%H:%M")
         
-        # ============================================
-        # GENERAR RECIBO EN FORMATO TXT (80 columnas)
-        # ============================================
         buffer = StringIO()
         
-        # Línea de separación superior
         buffer.write("=" * 80 + "\n")
         buffer.write("\n")
-        
-        # Título del recibo
         buffer.write(" " * 25 + "AGROAVICOLA DEL LLANO, C.A." + "\n")
         buffer.write(" " * 28 + f"RIF: {rif_empresa}" + "\n")
         buffer.write(" " * 18 + "RECIBO DE PAGO - CESTATICKETS SOCIALISTA" + "\n")
         buffer.write("\n")
-        
-        # Datos del empleado (columna izquierda)
         buffer.write("-" * 80 + "\n")
         buffer.write(" " * 0 + "NOMBRE Y APELLIDO: " + nombre_completo.ljust(40) + "PERIODO:" + "\n")
         buffer.write(" " * 0 + "CEDULA DE IDENTIDAD: " + cedula.ljust(40) + "DESDE: " + fecha_inicio + "\n")
         buffer.write(" " * 0 + "FECHA DE INGRESO: " + fecha_ingreso.ljust(40) + "HASTA: " + fecha_fin + "\n")
         buffer.write(" " * 0 + "CARGO: " + cargo.ljust(42) + "VALOR DEL DIA: Bs. " + f"{valor_diario_bs:,.2f}".replace(",", ".") + "\n")
         buffer.write("-" * 80 + "\n")
-        
-        # Tabla de asignaciones
         buffer.write("\n")
         buffer.write(" " * 0 + "ASIGNACIONES" + "\n")
         buffer.write(" " * 0 + "-" * 80 + "\n")
         buffer.write(" " * 0 + "CANTIDAD    CONCEPTO" + " " * 45 + "MONTO Bs." + "\n")
         buffer.write(" " * 0 + "-" * 80 + "\n")
-        
-        # Línea de Cestaticket
         buffer.write(f" {str(dias_pagados).rjust(8)}     CESTA TICKET SOCIALISTA" + " " * 20 + f" {total_bs:>14,.2f}".replace(",", ".") + "\n")
-        
-        # Prorrateo de horas extras (si existe)
-        prorrateo_bs = 0
-        if row[7] and row[7] > 0:
-            prorrateo_usd = row[7] * row[5]
-            prorrateo_bs = prorrateo_usd * tasa_bcv
-            buffer.write(f" {str(row[4]).rjust(8)}     PRORRATEO HORAS EXTRAS" + " " * 15 + f" {prorrateo_bs:>14,.2f}".replace(",", ".") + "\n")
-        else:
-            buffer.write(f" {str(0).rjust(8)}     PRORRATEO HORAS EXTRAS" + " " * 15 + f" {0:>14,.2f}".replace(",", ".") + "\n")
-        
-        # Subtotal
-        subtotal = total_bs + prorrateo_bs
+        buffer.write(f" {str(0).rjust(8)}     PRORRATEO HORAS EXTRAS" + " " * 15 + f" {0:>14,.2f}".replace(",", ".") + "\n")
         buffer.write(" " * 0 + "-" * 80 + "\n")
-        buffer.write(" " * 0 + " " * 60 + "SUBTOTAL: " + f"{subtotal:>14,.2f}".replace(",", ".") + "\n")
+        buffer.write(" " * 0 + " " * 60 + "SUBTOTAL: " + f"{total_bs:>14,.2f}".replace(",", ".") + "\n")
         buffer.write("-" * 80 + "\n")
-        
-        # Tabla de deducciones
         buffer.write("\n")
         buffer.write(" " * 0 + "DEDUCCIONES" + "\n")
         buffer.write(" " * 0 + "-" * 80 + "\n")
         buffer.write(" " * 0 + "CANTIDAD    CONCEPTO" + " " * 45 + "MONTO Bs." + "\n")
         buffer.write(" " * 0 + "-" * 80 + "\n")
-        
-        # Faltas (si no hay faltas, mostrar 0)
-        faltas_horas = 0
-        buffer.write(f" {str(faltas_horas).rjust(8)}     FALTA NO JUSTIFICADA EN HORAS" + " " * 10 + f" {0:>14,.2f}".replace(",", ".") + "\n")
-        
+        buffer.write(f" {str(0).rjust(8)}     FALTA NO JUSTIFICADA EN HORAS" + " " * 10 + f" {0:>14,.2f}".replace(",", ".") + "\n")
         buffer.write(" " * 0 + "-" * 80 + "\n")
-        buffer.write(" " * 0 + " " * 60 + "TOTAL A PAGAR: " + f"{subtotal:>14,.2f}".replace(",", ".") + "\n")
+        buffer.write(" " * 0 + " " * 60 + "TOTAL A PAGAR: " + f"{total_bs:>14,.2f}".replace(",", ".") + "\n")
         buffer.write("=" * 80 + "\n")
-        
-        # Texto de declaración
         buffer.write("\n")
         buffer.write("Declaro que he recibido el total indicado y recibo de conformidad con lo\n")
         buffer.write("establecido en el Art. 30 del Reglamento de la Ley de Alimentación para\n")
@@ -1235,8 +1192,6 @@ def generar_recibo_cestaticket_matriz(id):
         buffer.write("AGROAVICOLA DEL LLANO, C.A. las cantidades arriba descritas, a traves de\n")
         buffer.write("transferencia bancaria.\n")
         buffer.write("\n")
-        
-        # Firma y huellas
         buffer.write("-" * 80 + "\n")
         buffer.write("\n")
         buffer.write(" " * 10 + "Recibo Conforme:" + "\n")
@@ -1255,7 +1210,6 @@ def generar_recibo_cestaticket_matriz(id):
         buffer.write(" " * 30 + "FIN DEL RECIBO" + "\n")
         buffer.write("=" * 80 + "\n")
         
-        # Crear archivo para descarga
         mem = BytesIO()
         mem.write(buffer.getvalue().encode('cp850'))
         mem.seek(0)
@@ -1273,6 +1227,433 @@ def generar_recibo_cestaticket_matriz(id):
         import traceback
         traceback.print_exc()
         return jsonify({'error': f'Error interno: {str(e)}'}), 500
+
+# ============================================
+# 🆕 REPORTE DE PASIVOS LABORALES
+# ============================================
+@app.route('/api/reporte_pasivos', methods=['POST'])
+@login_required
+def reporte_pasivos():
+    """
+    Calcula los pasivos laborales de un empleado o todos los empleados
+    Basado en la LOTTT (Ley Orgánica del Trabajo, los Trabajadores y las Trabajadoras)
+    
+    - Utilidades (Art. 131): 30 días mínimo, 120 días máximo
+    - Aguinaldo (Art. 132): 15 días mínimo, 30 días máximo
+    - Vacaciones (Art. 190): 15 días + 1 día por año (máx 30)
+    - Bono Vacacional (Art. 192): 7 días + 1 día por año (máx 21)
+    """
+    data = request.json
+    empleado_id = data.get('empleado_id')
+    calcular_para_todos = data.get('calcular_para_todos', False)
+    
+    conn = get_db_connection()
+    if not conn:
+        return jsonify({'error': 'Error de conexión'}), 500
+    
+    cur = conn.cursor()
+    
+    cur.execute("SELECT valor FROM parametros WHERE clave = 'tasa_bcv'")
+    tasa_row = cur.fetchone()
+    tasa_bcv = float(tasa_row[0]) if tasa_row else 755.1552
+    
+    if calcular_para_todos:
+        cur.execute("SELECT * FROM empleados WHERE activo = 1 ORDER BY nombres")
+    else:
+        if not empleado_id:
+            return jsonify({'error': 'Se requiere empleado_id o calcular_para_todos=true'}), 400
+        cur.execute("SELECT * FROM empleados WHERE id_empleado = %s AND activo = 1", (empleado_id,))
+    
+    empleados = cur.fetchall()
+    cur.close()
+    conn.close()
+    
+    if not empleados:
+        return jsonify({'error': 'No se encontraron empleados'}), 404
+    
+    resultados = []
+    total_general_usd = 0
+    total_general_bs = 0
+    
+    for emp in empleados:
+        empleado = {
+            'id': emp[0],
+            'cedula': emp[1],
+            'nombre': f"{emp[2]} {emp[3]}",
+            'cargo': emp[6] or 'Sin cargo',
+            'fecha_ingreso': emp[5].isoformat() if emp[5] else None,
+            'salario_mensual_usd': float(emp[9]) if emp[9] else 0,
+            'tipo_pago': emp[10] or 'Quincenal'
+        }
+        
+        if emp[5]:
+            fecha_ingreso = emp[5]
+            hoy = datetime.now().date()
+            anos = hoy.year - fecha_ingreso.year
+            meses = hoy.month - fecha_ingreso.month
+            dias = hoy.day - fecha_ingreso.day
+            
+            if dias < 0:
+                meses -= 1
+                dias += 30
+            if meses < 0:
+                anos -= 1
+                meses += 12
+            
+            antiguedad = {
+                'anos': anos,
+                'meses': meses,
+                'dias': dias,
+                'total_anos': anos + (meses / 12) + (dias / 365)
+            }
+        else:
+            antiguedad = {'anos': 0, 'meses': 0, 'dias': 0, 'total_anos': 0}
+        
+        salario_base_usd = empleado['salario_mensual_usd']
+        salario_base_bs = salario_base_usd * tasa_bcv
+        
+        alicuota_utilidades = (salario_base_usd * 15 / 12) / 30
+        alicuota_bono_vacacional = (salario_base_usd * 7 / 12) / 30
+        
+        salario_integral_usd = salario_base_usd + alicuota_utilidades + alicuota_bono_vacacional
+        salario_integral_bs = salario_integral_usd * tasa_bcv
+        
+        dias_utilidades = min(120, max(30, 30 + (antiguedad['anos'] * 10)))
+        utilidades_usd = (salario_integral_usd / 30) * dias_utilidades
+        utilidades_bs = utilidades_usd * tasa_bcv
+        
+        dias_aguinaldo = min(30, max(15, 15 + antiguedad['anos']))
+        aguinaldo_usd = (salario_base_usd / 30) * dias_aguinaldo
+        aguinaldo_bs = aguinaldo_usd * tasa_bcv
+        
+        dias_vacaciones = min(30, 15 + antiguedad['anos'])
+        vacaciones_usd = (salario_base_usd / 30) * dias_vacaciones
+        vacaciones_bs = vacaciones_usd * tasa_bcv
+        
+        dias_bono_vacacional = min(21, 7 + antiguedad['anos'])
+        bono_vacacional_usd = (salario_base_usd / 30) * dias_bono_vacacional
+        bono_vacacional_bs = bono_vacacional_usd * tasa_bcv
+        
+        total_pasivos_usd = utilidades_usd + aguinaldo_usd + vacaciones_usd + bono_vacacional_usd
+        total_pasivos_bs = total_pasivos_usd * tasa_bcv
+        
+        total_general_usd += total_pasivos_usd
+        total_general_bs += total_pasivos_bs
+        
+        resultados.append({
+            'empleado': empleado,
+            'antiguedad': antiguedad,
+            'salario_base_usd': salario_base_usd,
+            'salario_base_bs': salario_base_bs,
+            'alicuota_utilidades_usd': alicuota_utilidades,
+            'alicuota_bono_vacacional_usd': alicuota_bono_vacacional,
+            'salario_integral_usd': salario_integral_usd,
+            'salario_integral_bs': salario_integral_bs,
+            'utilidades': {
+                'dias': dias_utilidades,
+                'usd': utilidades_usd,
+                'bs': utilidades_bs
+            },
+            'aguinaldo': {
+                'dias': dias_aguinaldo,
+                'usd': aguinaldo_usd,
+                'bs': aguinaldo_bs
+            },
+            'vacaciones': {
+                'dias': dias_vacaciones,
+                'usd': vacaciones_usd,
+                'bs': vacaciones_bs
+            },
+            'bono_vacacional': {
+                'dias': dias_bono_vacacional,
+                'usd': bono_vacacional_usd,
+                'bs': bono_vacacional_bs
+            },
+            'total_pasivos_usd': total_pasivos_usd,
+            'total_pasivos_bs': total_pasivos_bs
+        })
+    
+    return jsonify({
+        'tasa_bcv': tasa_bcv,
+        'total_general_usd': total_general_usd,
+        'total_general_bs': total_general_bs,
+        'resultados': resultados
+    })
+
+# ============================================
+# 🆕 REPORTE PARAFISCALES
+# ============================================
+@app.route('/api/reporte_parafiscales', methods=['POST'])
+@login_required
+def reporte_parafiscales():
+    """
+    Genera el reporte de descuentos parafiscales:
+    - IVSS: 4%
+    - RPE: 0.5%
+    - FAOV: 1%
+    - LPPP: Estimado de prestaciones (9% del salario integral)
+    """
+    data = request.json
+    fecha_inicio = data.get('fecha_inicio')
+    fecha_fin = data.get('fecha_fin')
+    empleado_id = data.get('empleado_id')
+    
+    if not fecha_inicio or not fecha_fin:
+        return jsonify({'error': 'Fechas requeridas'}), 400
+    
+    conn = get_db_connection()
+    if not conn:
+        return jsonify({'error': 'Error de conexión'}), 500
+    
+    cur = conn.cursor()
+    
+    cur.execute("SELECT valor FROM parametros WHERE clave = 'tasa_bcv'")
+    tasa_row = cur.fetchone()
+    tasa_bcv = float(tasa_row[0]) if tasa_row else 755.1552
+    
+    cur.execute("SELECT valor FROM parametros WHERE clave = 'porcentaje_ivss'")
+    ivss_row = cur.fetchone()
+    porcentaje_ivss = float(ivss_row[0]) if ivss_row else 0.04
+    
+    cur.execute("SELECT valor FROM parametros WHERE clave = 'porcentaje_rpe'")
+    rpe_row = cur.fetchone()
+    porcentaje_rpe = float(rpe_row[0]) if rpe_row else 0.005
+    
+    cur.execute("SELECT valor FROM parametros WHERE clave = 'porcentaje_faov'")
+    faov_row = cur.fetchone()
+    porcentaje_faov = float(faov_row[0]) if faov_row else 0.01
+    
+    query = """
+        SELECT 
+            n.id_nomina,
+            n.id_empleado,
+            n.fecha_calculo,
+            n.total_asignaciones_usd,
+            n.sso_usd,
+            n.rpe_usd,
+            n.faov_usd,
+            n.sso_bs,
+            n.rpe_bs,
+            n.faov_bs,
+            e.nombres,
+            e.apellidos,
+            e.cedula,
+            e.salario_mensual_usd
+        FROM nominas n
+        JOIN empleados e ON n.id_empleado = e.id_empleado
+        WHERE n.fecha_calculo BETWEEN %s AND %s
+    """
+    params = [fecha_inicio, fecha_fin]
+    
+    if empleado_id:
+        query += " AND n.id_empleado = %s"
+        params.append(empleado_id)
+    
+    query += " ORDER BY e.nombres, n.fecha_calculo"
+    
+    cur.execute(query, params)
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+    
+    if not rows:
+        return jsonify({'error': 'No hay nóminas en el período seleccionado'}), 404
+    
+    empleados_dict = {}
+    total_ivss = 0
+    total_rpe = 0
+    total_faov = 0
+    total_lppp = 0
+    total_asignaciones = 0
+    
+    for row in rows:
+        emp_id = row[1]
+        if emp_id not in empleados_dict:
+            empleados_dict[emp_id] = {
+                'cedula': row[12],
+                'nombre': f"{row[10]} {row[11]}",
+                'salario_mensual_usd': float(row[13]) if row[13] else 0,
+                'nominas': [],
+                'total_ivss': 0,
+                'total_rpe': 0,
+                'total_faov': 0,
+                'total_lppp': 0,
+                'total_asignaciones': 0
+            }
+        
+        sso_usd = float(row[4]) if row[4] else 0
+        rpe_usd = float(row[5]) if row[5] else 0
+        faov_usd = float(row[6]) if row[6] else 0
+        asignaciones = float(row[3]) if row[3] else 0
+        
+        empleados_dict[emp_id]['total_ivss'] += sso_usd
+        empleados_dict[emp_id]['total_rpe'] += rpe_usd
+        empleados_dict[emp_id]['total_faov'] += faov_usd
+        empleados_dict[emp_id]['total_asignaciones'] += asignaciones
+        
+        total_ivss += sso_usd
+        total_rpe += rpe_usd
+        total_faov += faov_usd
+        total_asignaciones += asignaciones
+    
+    for emp_id, emp_data in empleados_dict.items():
+        lppp = emp_data['total_asignaciones'] * 0.09
+        emp_data['total_lppp'] = lppp
+        total_lppp += lppp
+    
+    return jsonify({
+        'tasa_bcv': tasa_bcv,
+        'porcentaje_ivss': porcentaje_ivss,
+        'porcentaje_rpe': porcentaje_rpe,
+        'porcentaje_faov': porcentaje_faov,
+        'periodo': {
+            'fecha_inicio': fecha_inicio,
+            'fecha_fin': fecha_fin
+        },
+        'totales': {
+            'ivss_usd': total_ivss,
+            'ivss_bs': total_ivss * tasa_bcv,
+            'rpe_usd': total_rpe,
+            'rpe_bs': total_rpe * tasa_bcv,
+            'faov_usd': total_faov,
+            'faov_bs': total_faov * tasa_bcv,
+            'lppp_usd': total_lppp,
+            'lppp_bs': total_lppp * tasa_bcv,
+            'total_asignaciones_usd': total_asignaciones,
+            'total_asignaciones_bs': total_asignaciones * tasa_bcv
+        },
+        'detalle_empleados': empleados_dict
+    })
+
+# ============================================
+# 🆕 RESUMEN EN DÓLARES
+# ============================================
+@app.route('/api/resumen_dolares', methods=['POST'])
+@login_required
+def resumen_dolares():
+    """
+    Genera un resumen mensual en dólares de todos los conceptos
+    """
+    data = request.json
+    mes = data.get('mes')
+    anio = data.get('anio')
+    empleado_id = data.get('empleado_id')
+    
+    if not mes or not anio:
+        return jsonify({'error': 'Mes y año requeridos'}), 400
+    
+    conn = get_db_connection()
+    if not conn:
+        return jsonify({'error': 'Error de conexión'}), 500
+    
+    cur = conn.cursor()
+    
+    cur.execute("SELECT valor FROM parametros WHERE clave = 'tasa_bcv'")
+    tasa_row = cur.fetchone()
+    tasa_bcv = float(tasa_row[0]) if tasa_row else 755.1552
+    
+    fecha_inicio = f"{anio}-{mes:02d}-01"
+    if mes == 12:
+        fecha_fin = f"{anio+1}-01-01"
+    else:
+        fecha_fin = f"{anio}-{mes+1:02d}-01"
+    
+    query = """
+        SELECT 
+            n.id_empleado,
+            n.fecha_calculo,
+            n.salario_base_usd,
+            n.horas_extras_usd,
+            n.bono_complementario_usd,
+            n.total_asignaciones_usd,
+            n.total_deducciones_usd,
+            n.neto_pagar_usd,
+            e.nombres,
+            e.apellidos,
+            e.cedula,
+            e.tipo_pago
+        FROM nominas n
+        JOIN empleados e ON n.id_empleado = e.id_empleado
+        WHERE n.fecha_calculo >= %s AND n.fecha_calculo < %s
+    """
+    params = [fecha_inicio, fecha_fin]
+    
+    if empleado_id:
+        query += " AND n.id_empleado = %s"
+        params.append(empleado_id)
+    
+    query += " ORDER BY e.nombres"
+    
+    cur.execute(query, params)
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+    
+    if not rows:
+        return jsonify({'error': 'No hay nóminas en el mes seleccionado'}), 404
+    
+    empleados_dict = {}
+    total_salario = 0
+    total_horas_extras = 0
+    total_bono = 0
+    total_asignaciones = 0
+    total_deducciones = 0
+    total_neto = 0
+    
+    for row in rows:
+        emp_id = row[0]
+        if emp_id not in empleados_dict:
+            empleados_dict[emp_id] = {
+                'cedula': row[10],
+                'nombre': f"{row[8]} {row[9]}",
+                'tipo_pago': row[11],
+                'salario_usd': 0,
+                'horas_extras_usd': 0,
+                'bono_usd': 0,
+                'asignaciones_usd': 0,
+                'deducciones_usd': 0,
+                'neto_usd': 0
+            }
+        
+        salario = float(row[2]) if row[2] else 0
+        horas_extras = float(row[3]) if row[3] else 0
+        bono = float(row[4]) if row[4] else 0
+        asignaciones = float(row[5]) if row[5] else 0
+        deducciones = float(row[6]) if row[6] else 0
+        neto = float(row[7]) if row[7] else 0
+        
+        empleados_dict[emp_id]['salario_usd'] += salario
+        empleados_dict[emp_id]['horas_extras_usd'] += horas_extras
+        empleados_dict[emp_id]['bono_usd'] += bono
+        empleados_dict[emp_id]['asignaciones_usd'] += asignaciones
+        empleados_dict[emp_id]['deducciones_usd'] += deducciones
+        empleados_dict[emp_id]['neto_usd'] += neto
+        
+        total_salario += salario
+        total_horas_extras += horas_extras
+        total_bono += bono
+        total_asignaciones += asignaciones
+        total_deducciones += deducciones
+        total_neto += neto
+    
+    return jsonify({
+        'tasa_bcv': tasa_bcv,
+        'periodo': {
+            'mes': mes,
+            'anio': anio,
+            'fecha_inicio': fecha_inicio,
+            'fecha_fin': fecha_fin
+        },
+        'totales': {
+            'salario_usd': total_salario,
+            'horas_extras_usd': total_horas_extras,
+            'bono_usd': total_bono,
+            'asignaciones_usd': total_asignaciones,
+            'deducciones_usd': total_deducciones,
+            'neto_usd': total_neto
+        },
+        'detalle_empleados': empleados_dict
+    })
 
 # ============================================
 # GENERADOR DE PDF DEL LOTE DE NÓMINA
