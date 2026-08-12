@@ -303,28 +303,64 @@ def cambiar_password():
 # ============================================
 # ENDPOINTS DE NÓMINA
 # ============================================
-@app.route('/api/empleados', methods=['GET'])
+@app.route('/api/empleados_con_sucursal', methods=['GET'])
 @login_required
-def get_empleados():
+def get_empleados_con_sucursal():
+    """
+    Obtiene empleados con información de sucursal para filtrado
+    """
     search = request.args.get('search', '')
     sucursal_id = request.args.get('sucursal_id', '')
     tipo_pago = request.args.get('tipo_pago', '')
+    
     conn = get_db_connection()
-    if not conn: return jsonify([])
+    if not conn:
+        return jsonify([])
+    
     cur = conn.cursor()
-    query = "SELECT * FROM empleados WHERE activo = 1"
+    query = """
+        SELECT 
+            e.id_empleado, 
+            e.cedula, 
+            e.nombres, 
+            e.apellidos,
+            e.tipo_pago,
+            e.sucursal_id,
+            s.nombre as sucursal_nombre
+        FROM empleados e
+        LEFT JOIN sucursales s ON e.sucursal_id = s.id_sucursal
+        WHERE e.activo = 1
+    """
     params = []
-    if sucursal_id: query += " AND sucursal_id = %s"; params.append(sucursal_id)
-    if tipo_pago: query += " AND tipo_pago = %s"; params.append(tipo_pago)
-    if search: query += " AND (cedula ILIKE %s OR nombres ILIKE %s OR apellidos ILIKE %s)"; sp = f"%{search}%"; params.extend([sp, sp, sp])
-    query += " ORDER BY nombres"
+    
+    if sucursal_id:
+        query += " AND e.sucursal_id = %s"
+        params.append(sucursal_id)
+    
+    if tipo_pago:
+        query += " AND e.tipo_pago = %s"
+        params.append(tipo_pago)
+    
+    if search:
+        query += " AND (e.cedula ILIKE %s OR e.nombres ILIKE %s OR e.apellidos ILIKE %s)"
+        sp = f"%{search}%"
+        params.extend([sp, sp, sp])
+    
+    query += " ORDER BY s.nombre, e.nombres"
+    
     cur.execute(query, params)
-    rows = cur.fetchall(); cur.close(); conn.close()
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+    
     return jsonify([{
-        'id_empleado': r[0], 'cedula': r[1], 'nombres': r[2], 'apellidos': r[3],
-        'fecha_nacimiento': r[4].isoformat() if r[4] else None, 'fecha_ingreso': r[5].isoformat() if r[5] else None,
-        'cargo': r[6], 'departamento': r[7], 'sucursal_id': r[8],
-        'salario_mensual_usd': float(r[9]) if r[9] else 0, 'tipo_pago': r[10], 'activo': r[11], 'email': r[12], 'telefono': r[13], 'direccion': r[14], 'cuenta_bancaria': r[15]
+        'id_empleado': r[0],
+        'cedula': r[1],
+        'nombres': r[2],
+        'apellidos': r[3],
+        'tipo_pago': r[4] or 'Quincenal',
+        'sucursal_id': r[5],
+        'sucursal_nombre': r[6] or 'Sin sucursal'
     } for r in rows])
 
 @app.route('/api/empleados', methods=['POST'])
