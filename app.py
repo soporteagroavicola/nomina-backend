@@ -303,6 +303,33 @@ def cambiar_password():
 # ============================================
 # ENDPOINTS DE NÓMINA
 # ============================================
+@app.route('/api/empleados', methods=['GET'])
+@login_required
+def get_empleados():
+    search = request.args.get('search', '')
+    sucursal_id = request.args.get('sucursal_id', '')
+    tipo_pago = request.args.get('tipo_pago', '')
+    conn = get_db_connection()
+    if not conn: return jsonify([])
+    cur = conn.cursor()
+    query = "SELECT * FROM empleados WHERE activo = 1"
+    params = []
+    if sucursal_id: query += " AND sucursal_id = %s"; params.append(sucursal_id)
+    if tipo_pago: query += " AND tipo_pago = %s"; params.append(tipo_pago)
+    if search: query += " AND (cedula ILIKE %s OR nombres ILIKE %s OR apellidos ILIKE %s)"; sp = f"%{search}%"; params.extend([sp, sp, sp])
+    query += " ORDER BY nombres"
+    cur.execute(query, params)
+    rows = cur.fetchall(); cur.close(); conn.close()
+    return jsonify([{
+        'id_empleado': r[0], 'cedula': r[1], 'nombres': r[2], 'apellidos': r[3],
+        'fecha_nacimiento': r[4].isoformat() if r[4] else None, 'fecha_ingreso': r[5].isoformat() if r[5] else None,
+        'cargo': r[6], 'departamento': r[7], 'sucursal_id': r[8],
+        'salario_mensual_usd': float(r[9]) if r[9] else 0, 'tipo_pago': r[10], 'activo': r[11], 'email': r[12], 'telefono': r[13], 'direccion': r[14], 'cuenta_bancaria': r[15]
+    } for r in rows])
+
+# ============================================
+# 🆕 ENDPOINT: EMPLEADOS CON SUCURSAL (PARA CESTATICKET)
+# ============================================
 @app.route('/api/empleados_con_sucursal', methods=['GET'])
 @login_required
 def get_empleados_con_sucursal():
@@ -348,8 +375,15 @@ def get_empleados_con_sucursal():
     
     query += " ORDER BY s.nombre, e.nombres"
     
-    cur.execute(query, params)
-    rows = cur.fetchall()
+    try:
+        cur.execute(query, params)
+        rows = cur.fetchall()
+    except Exception as e:
+        print(f"❌ Error en consulta: {e}")
+        cur.close()
+        conn.close()
+        return jsonify([])
+    
     cur.close()
     conn.close()
     
@@ -358,9 +392,9 @@ def get_empleados_con_sucursal():
         'cedula': r[1],
         'nombres': r[2],
         'apellidos': r[3],
-        'tipo_pago': r[4] or 'Quincenal',
+        'tipo_pago': r[4] if r[4] else 'Quincenal',
         'sucursal_id': r[5],
-        'sucursal_nombre': r[6] or 'Sin sucursal'
+        'sucursal_nombre': r[6] if r[6] else 'Sin sucursal'
     } for r in rows])
 
 @app.route('/api/empleados', methods=['POST'])
@@ -1265,7 +1299,7 @@ def generar_recibo_cestaticket_matriz(id):
         return jsonify({'error': f'Error interno: {str(e)}'}), 500
 
 # ============================================
-# 🆕 REPORTE DE PASIVOS LABORALES
+# REPORTE DE PASIVOS LABORALES
 # ============================================
 @app.route('/api/reporte_pasivos', methods=['POST'])
 @login_required
@@ -1417,7 +1451,7 @@ def reporte_pasivos():
     })
 
 # ============================================
-# 🆕 REPORTE PARAFISCALES
+# REPORTE PARAFISCALES
 # ============================================
 @app.route('/api/reporte_parafiscales', methods=['POST'])
 @login_required
@@ -1562,7 +1596,7 @@ def reporte_parafiscales():
     })
 
 # ============================================
-# 🆕 RESUMEN EN DÓLARES
+# RESUMEN EN DÓLARES
 # ============================================
 @app.route('/api/resumen_dolares', methods=['POST'])
 @login_required
