@@ -631,7 +631,7 @@ def calcular_pasivos():
     })
 
 # ============================================
-# 🆕 ENDPOINT: CÁLCULO DE CESTATICKET (CORREGIDO)
+# 🆕 ENDPOINT: CÁLCULO DE CESTATICKET
 # ============================================
 @app.route('/api/calcular_cestaticket', methods=['POST'])
 @login_required
@@ -640,7 +640,6 @@ def calcular_cestaticket():
     fecha_inicio, fecha_fin = data.get('fecha_inicio'), data.get('fecha_fin')
     descripcion = data.get('descripcion', '')
     empleados_ids = data.get('empleados_ids', [])
-    # 📌 CORREGIDO: Recibir faltas correctamente
     faltas_dict = data.get('faltas', {})
 
     if not fecha_inicio or not fecha_fin or not empleados_ids:
@@ -652,20 +651,16 @@ def calcular_cestaticket():
     
     cur = conn.cursor()
     
-    # Obtener tasa BCV
     cur.execute("SELECT valor FROM parametros WHERE clave = 'tasa_bcv'")
     tasa_row = cur.fetchone()
     tasa_bcv = float(tasa_row[0]) if tasa_row else 755.1552
     
-    # Obtener valor del cestaticket (mensual en USD)
     cur.execute("SELECT valor FROM parametros WHERE clave = 'cestaticket_usd'")
     valor_row = cur.fetchone()
     valor_mensual_usd = float(valor_row[0]) if valor_row else 40.0
 
-    # Calcular valor por día (40 / 30 = 1.3333)
     valor_diario_usd = valor_mensual_usd / 30
 
-    # Obtener empleados
     placeholders = ','.join(['%s'] * len(empleados_ids))
     cur.execute(f"SELECT * FROM empleados WHERE id_empleado IN ({placeholders})", empleados_ids)
     empleados = cur.fetchall()
@@ -673,7 +668,6 @@ def calcular_cestaticket():
     resultados = []
     total_bs_lote = 0.0
     
-    # Calcular días hábiles del período (solo para mostrar información)
     start_date = datetime.strptime(fecha_inicio, "%Y-%m-%d").date()
     end_date = datetime.strptime(fecha_fin, "%Y-%m-%d").date()
     
@@ -685,12 +679,10 @@ def calcular_cestaticket():
         current_day += timedelta(days=1)
 
     for emp in empleados:
-        emp_id = str(emp[0])  # Convertir a string para coincidir con el frontend
+        emp_id = str(emp[0])
         
-        # 📌 CORREGIDO: Obtener faltas del empleado correctamente
         faltas = faltas_dict.get(emp_id, 0)
         
-        # Si es string, convertir a int
         if isinstance(faltas, str):
             try:
                 faltas = int(faltas) if faltas.isdigit() else 0
@@ -700,12 +692,6 @@ def calcular_cestaticket():
             faltas = 0
         else:
             faltas = int(faltas)
-        
-        # 📌 CÁLCULO CORRECTO SEGÚN LEY
-        # 1. Base mensual: $40 USD
-        # 2. Descontar: faltas * (40 / 30) = faltas * 1.3333
-        # 3. Total USD = 40 - (faltas * 1.3333)
-        # 4. Total Bs = Total USD * tasa_bcv
         
         descuento_usd = faltas * valor_diario_usd
         total_usd = valor_mensual_usd - descuento_usd
@@ -730,14 +716,12 @@ def calcular_cestaticket():
         }
         resultados.append(calculo)
 
-    # Guardar lote
     cur.execute('''
         INSERT INTO cestaticket_lotes (descripcion, fecha_calculo, total_bs, cantidad_empleados, tasa_bcv)
         VALUES (%s, %s, %s, %s, %s) RETURNING id_lote
     ''', (descripcion, datetime.now().date(), total_bs_lote, len(empleados), tasa_bcv))
     lote_id = cur.fetchone()[0]
 
-    # Guardar detalles
     for calc in resultados:
         cur.execute('''
             INSERT INTO cestaticket_nominas (
@@ -765,7 +749,7 @@ def calcular_cestaticket():
     })
 
 # ============================================
-# HISTORIAL Y DETALLE CESTATICKET
+# HISTORIAL Y DETALLE CESTATICKET - CORREGIDO
 # ============================================
 @app.route('/api/lotes_cestaticket', methods=['GET'])
 @login_required
@@ -796,45 +780,79 @@ def get_lotes_cestaticket():
 def get_lote_detalle_cestaticket(id):
     try:
         conn = get_db_connection()
-        if not conn: return jsonify({'error': 'Error de conexión'}), 500
+        if not conn:
+            return jsonify({'error': 'Error de conexión'}), 500
         cur = conn.cursor()
+        
         cur.execute("SELECT * FROM cestaticket_lotes WHERE id_lote = %s", (id,))
         lote_row = cur.fetchone()
-        if not lote_row: return jsonify({'error': 'Lote no encontrado'}), 404
+        if not lote_row:
+            return jsonify({'error': 'Lote no encontrado'}), 404
+        
         cur.execute('''
             SELECT 
-                c.id, c.id_empleado, c.fecha_inicio, c.fecha_fin, c.dias_pagados, 
-                c.valor_diario_usd, c.tasa_bcv, c.total_usd, c.total_bs, c.descripcion, c.lote_id,
-                e.nombres, e.apellidos, e.cedula
+                c.id, 
+                c.id_empleado, 
+                c.fecha_inicio, 
+                c.fecha_fin, 
+                c.dias_pagados, 
+                c.valor_diario_usd, 
+                c.tasa_bcv, 
+                c.total_usd, 
+                c.total_bs, 
+                c.descripcion, 
+                c.lote_id,
+                e.nombres, 
+                e.apellidos, 
+                e.cedula
             FROM cestaticket_nominas c
             JOIN empleados e ON c.id_empleado = e.id_empleado
             WHERE c.lote_id = %s
             ORDER BY e.nombres
         ''', (id,))
+        
         nominas_rows = cur.fetchall()
-        cur.close(); conn.close()
+        cur.close()
+        conn.close()
 
         nominas = []
         for c in nominas_rows:
+            dias_pagados = c[4] if c[4] else 0
+            valor_diario = float(c[5]) if c[5] else 0
+            total_usd = float(c[7]) if c[7] else 0
+            valor_mensual_usd = dias_pagados * valor_diario
+            
             nominas.append({
-                'id': c[0], 'id_empleado': c[1], 
-                'fecha_inicio': c[2].isoformat() if c[2] else None, 
+                'id': c[0],
+                'id_empleado': c[1],
+                'fecha_inicio': c[2].isoformat() if c[2] else None,
                 'fecha_fin': c[3].isoformat() if c[3] else None,
-                'dias_pagados': c[4], 'valor_diario_usd': float(c[5]) if c[5] else 0,
-                'tasa_bcv': float(c[6]) if c[6] else 0, 'total_usd': float(c[7]) if c[7] else 0,
-                'total_bs': float(c[8]) if c[8] else 0, 'descripcion': c[9] if c[9] else '',
+                'dias_pagados': dias_pagados,
+                'valor_diario_usd': valor_diario,
+                'tasa_bcv': float(c[6]) if c[6] else 0,
+                'total_usd': total_usd,
+                'total_bs': float(c[8]) if c[8] else 0,
+                'descripcion': c[9] if c[9] else '',
                 'lote_id': c[10] if c[10] else None,
-                'nombres': c[11] if c[11] else '', 'apellidos': c[12] if c[12] else '',
-                'cedula': c[13] if c[13] else ''
+                'nombres': c[11] if c[11] else '',
+                'apellidos': c[12] if c[12] else '',
+                'cedula': c[13] if c[13] else '',
+                'valor_mensual_usd': valor_mensual_usd
             })
+
         return jsonify({
-            'id_lote': lote_row[0], 'descripcion': lote_row[1], 'fecha_calculo': lote_row[2].isoformat() if lote_row[2] else None,
-            'total_bs': float(lote_row[3]) if lote_row[3] else 0, 'cantidad_empleados_lote': lote_row[4],
+            'id_lote': lote_row[0],
+            'descripcion': lote_row[1],
+            'fecha_calculo': lote_row[2].isoformat() if lote_row[2] else None,
+            'total_bs': float(lote_row[3]) if lote_row[3] else 0,
+            'cantidad_empleados_lote': lote_row[4] if lote_row[4] else 0,
             'tasa_bcv': float(lote_row[5]) if lote_row[5] else 0,
             'nominas': nominas
         })
     except Exception as e:
         print(f"❌ Error crítico en get_lote_detalle_cestaticket: {e}")
+        import traceback
+        traceback.print_exc()
         return jsonify({'error': f'Error interno del servidor: {str(e)}'}), 500
 
 @app.route('/api/lotes_cestaticket/<int:id>', methods=['DELETE'])
@@ -964,6 +982,7 @@ def generar_recibo_cestaticket(id):
         tasa_bcv = float(c[6]) if c[6] else 0
         total_usd = float(c[7]) if c[7] else 0
         total_bs = float(c[8]) if c[8] else 0
+        valor_mensual_usd = 40.0  # Valor fijo mensual
 
         buffer = BytesIO()
         doc = SimpleDocTemplate(buffer, pagesize=A4, leftMargin=20*mm, rightMargin=20*mm, topMargin=20*mm, bottomMargin=20*mm)
@@ -992,7 +1011,7 @@ def generar_recibo_cestaticket(id):
         header_data = [
             [Paragraph(f"<b>Empleado:</b> {empleado_nombre}", normal_style), Paragraph(f"<b>Cédula:</b> {empleado_cedula}", normal_style)],
             [Paragraph(f"<b>Cargo:</b> {cargo}", normal_style), Paragraph(f"<b>Período:</b> {fecha_inicio} a {fecha_fin}", normal_style)],
-            [Paragraph(f"<b>Tasa BCV:</b> Bs. {tasa_bcv:.4f}", normal_style), Paragraph(f"<b>Valor Día (USD):</b> ${valor_diario_usd:.4f}", normal_style)],
+            [Paragraph(f"<b>Tasa BCV:</b> Bs. {tasa_bcv:.4f}", normal_style), Paragraph(f"<b>Valor Mensual:</b> ${valor_mensual_usd:.2f}", normal_style)],
         ]
         header_table = Table(header_data, colWidths=[250, 250])
         header_table.setStyle(TableStyle([
