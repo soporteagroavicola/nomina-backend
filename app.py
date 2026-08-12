@@ -631,7 +631,7 @@ def calcular_pasivos():
     })
 
 # ============================================
-# 🆕 ENDPOINT: CÁLCULO DE CESTATICKET
+# ENDPOINT: CÁLCULO DE CESTATICKET
 # ============================================
 @app.route('/api/calcular_cestaticket', methods=['POST'])
 @login_required
@@ -749,7 +749,7 @@ def calcular_cestaticket():
     })
 
 # ============================================
-# HISTORIAL Y DETALLE CESTATICKET - CORREGIDO
+# HISTORIAL Y DETALLE CESTATICKET
 # ============================================
 @app.route('/api/lotes_cestaticket', methods=['GET'])
 @login_required
@@ -982,7 +982,7 @@ def generar_recibo_cestaticket(id):
         tasa_bcv = float(c[6]) if c[6] else 0
         total_usd = float(c[7]) if c[7] else 0
         total_bs = float(c[8]) if c[8] else 0
-        valor_mensual_usd = 40.0  # Valor fijo mensual
+        valor_mensual_usd = 40.0
 
         buffer = BytesIO()
         doc = SimpleDocTemplate(buffer, pagesize=A4, leftMargin=20*mm, rightMargin=20*mm, topMargin=20*mm, bottomMargin=20*mm)
@@ -1061,6 +1061,218 @@ def generar_recibo_cestaticket(id):
     except Exception as e:
         print(f"❌ Error fatal en generar_recibo_cestaticket: {e}")
         return jsonify({'error': str(e)}), 500
+
+# ============================================
+# 🆕 RECIBO CESTATICKET PARA MATRIZ DE PUNTO
+# ============================================
+@app.route('/api/generar_recibo_cestaticket_matriz/<int:id>', methods=['GET'])
+@login_required
+def generar_recibo_cestaticket_matriz(id):
+    """
+    Genera un recibo de pago de Cestaticket en formato TXT para impresión en matriz de punto
+    Formato de media página (80 columnas)
+    """
+    try:
+        conn = get_db_connection()
+        if not conn:
+            return jsonify({'error': 'Error de conexión'}), 500
+        cur = conn.cursor()
+        
+        # Obtener datos del cestaticket
+        cur.execute('''
+            SELECT 
+                c.id, 
+                c.id_empleado, 
+                c.fecha_inicio, 
+                c.fecha_fin, 
+                c.dias_pagados, 
+                c.valor_diario_usd, 
+                c.tasa_bcv, 
+                c.total_usd, 
+                c.total_bs, 
+                c.descripcion, 
+                c.lote_id,
+                e.nombres, 
+                e.apellidos, 
+                e.cedula, 
+                e.cargo,
+                e.fecha_ingreso
+            FROM cestaticket_nominas c
+            JOIN empleados e ON c.id_empleado = e.id_empleado
+            WHERE c.id = %s
+        ''', (id,))
+        
+        row = cur.fetchone()
+        cur.close()
+        conn.close()
+        
+        if not row:
+            return jsonify({'error': 'Cestaticket no encontrado'}), 404
+
+        # Obtener parámetros de la empresa
+        conn = get_db_connection()
+        if conn:
+            cur = conn.cursor()
+            cur.execute("SELECT valor FROM parametros WHERE clave = 'rif_empresa'")
+            rif_row = cur.fetchone()
+            rif_empresa = str(rif_row[0]) if rif_row else "J-123456789"
+            
+            cur.execute("SELECT valor FROM parametros WHERE clave = 'tasa_bcv'")
+            tasa_row = cur.fetchone()
+            tasa_bcv = float(tasa_row[0]) if tasa_row else 755.1552
+            
+            cur.execute("SELECT valor FROM parametros WHERE clave = 'cestaticket_usd'")
+            cesta_row = cur.fetchone()
+            valor_mensual_usd = float(cesta_row[0]) if cesta_row else 40.0
+            
+            cur.close()
+            conn.close()
+        else:
+            rif_empresa = "J-123456789"
+            tasa_bcv = 755.1552
+            valor_mensual_usd = 40.0
+
+        # Datos del empleado
+        nombres = row[11] or ''
+        apellidos = row[12] or ''
+        nombre_completo = f"{nombres} {apellidos}".strip()
+        cedula = row[13] or ''
+        cargo = row[14] or ''
+        fecha_ingreso = row[15].strftime("%d/%m/%Y") if row[15] else ''
+        
+        # Datos del cálculo
+        fecha_inicio = row[2].strftime("%d/%m/%Y") if row[2] else ''
+        fecha_fin = row[3].strftime("%d/%m/%Y") if row[3] else ''
+        dias_pagados = row[4] if row[4] else 30
+        valor_diario_usd = float(row[5]) if row[5] else (valor_mensual_usd / 30)
+        total_usd = float(row[7]) if row[7] else 0
+        total_bs = float(row[8]) if row[8] else 0
+        descripcion = row[9] or "Cestaticket"
+        lote_id = row[10]
+        
+        # Calcular valor diario en Bs
+        valor_diario_bs = valor_diario_usd * tasa_bcv
+        
+        # Calcular total en Bs basado en días pagados
+        total_bs_calculado = dias_pagados * valor_diario_usd * tasa_bcv
+        
+        # Usar el total_bs de la BD o el calculado
+        if total_bs == 0:
+            total_bs = total_bs_calculado
+        
+        # Fecha actual
+        fecha_actual = datetime.now().strftime("%d/%m/%Y")
+        hora_actual = datetime.now().strftime("%H:%M")
+        
+        # ============================================
+        # GENERAR RECIBO EN FORMATO TXT (80 columnas)
+        # ============================================
+        buffer = StringIO()
+        
+        # Línea de separación superior
+        buffer.write("=" * 80 + "\n")
+        buffer.write("\n")
+        
+        # Título del recibo
+        buffer.write(" " * 25 + "AGROAVICOLA DEL LLANO, C.A." + "\n")
+        buffer.write(" " * 28 + f"RIF: {rif_empresa}" + "\n")
+        buffer.write(" " * 18 + "RECIBO DE PAGO - CESTATICKETS SOCIALISTA" + "\n")
+        buffer.write("\n")
+        
+        # Datos del empleado (columna izquierda)
+        buffer.write("-" * 80 + "\n")
+        buffer.write(" " * 0 + "NOMBRE Y APELLIDO: " + nombre_completo.ljust(40) + "PERIODO:" + "\n")
+        buffer.write(" " * 0 + "CEDULA DE IDENTIDAD: " + cedula.ljust(40) + "DESDE: " + fecha_inicio + "\n")
+        buffer.write(" " * 0 + "FECHA DE INGRESO: " + fecha_ingreso.ljust(40) + "HASTA: " + fecha_fin + "\n")
+        buffer.write(" " * 0 + "CARGO: " + cargo.ljust(42) + "VALOR DEL DIA: Bs. " + f"{valor_diario_bs:,.2f}".replace(",", ".") + "\n")
+        buffer.write("-" * 80 + "\n")
+        
+        # Tabla de asignaciones
+        buffer.write("\n")
+        buffer.write(" " * 0 + "ASIGNACIONES" + "\n")
+        buffer.write(" " * 0 + "-" * 80 + "\n")
+        buffer.write(" " * 0 + "CANTIDAD    CONCEPTO" + " " * 45 + "MONTO Bs." + "\n")
+        buffer.write(" " * 0 + "-" * 80 + "\n")
+        
+        # Línea de Cestaticket
+        buffer.write(f" {str(dias_pagados).rjust(8)}     CESTA TICKET SOCIALISTA" + " " * 20 + f" {total_bs:>14,.2f}".replace(",", ".") + "\n")
+        
+        # Prorrateo de horas extras (si existe)
+        prorrateo_bs = 0
+        if row[7] and row[7] > 0:
+            prorrateo_usd = row[7] * row[5]
+            prorrateo_bs = prorrateo_usd * tasa_bcv
+            buffer.write(f" {str(row[4]).rjust(8)}     PRORRATEO HORAS EXTRAS" + " " * 15 + f" {prorrateo_bs:>14,.2f}".replace(",", ".") + "\n")
+        else:
+            buffer.write(f" {str(0).rjust(8)}     PRORRATEO HORAS EXTRAS" + " " * 15 + f" {0:>14,.2f}".replace(",", ".") + "\n")
+        
+        # Subtotal
+        subtotal = total_bs + prorrateo_bs
+        buffer.write(" " * 0 + "-" * 80 + "\n")
+        buffer.write(" " * 0 + " " * 60 + "SUBTOTAL: " + f"{subtotal:>14,.2f}".replace(",", ".") + "\n")
+        buffer.write("-" * 80 + "\n")
+        
+        # Tabla de deducciones
+        buffer.write("\n")
+        buffer.write(" " * 0 + "DEDUCCIONES" + "\n")
+        buffer.write(" " * 0 + "-" * 80 + "\n")
+        buffer.write(" " * 0 + "CANTIDAD    CONCEPTO" + " " * 45 + "MONTO Bs." + "\n")
+        buffer.write(" " * 0 + "-" * 80 + "\n")
+        
+        # Faltas (si no hay faltas, mostrar 0)
+        faltas_horas = 0
+        buffer.write(f" {str(faltas_horas).rjust(8)}     FALTA NO JUSTIFICADA EN HORAS" + " " * 10 + f" {0:>14,.2f}".replace(",", ".") + "\n")
+        
+        buffer.write(" " * 0 + "-" * 80 + "\n")
+        buffer.write(" " * 0 + " " * 60 + "TOTAL A PAGAR: " + f"{subtotal:>14,.2f}".replace(",", ".") + "\n")
+        buffer.write("=" * 80 + "\n")
+        
+        # Texto de declaración
+        buffer.write("\n")
+        buffer.write("Declaro que he recibido el total indicado y recibo de conformidad con lo\n")
+        buffer.write("establecido en el Art. 30 del Reglamento de la Ley de Alimentación para\n")
+        buffer.write("los trabajadores y trabajadoras, declaro que he recibido de la empresa\n")
+        buffer.write("AGROAVICOLA DEL LLANO, C.A. las cantidades arriba descritas, a traves de\n")
+        buffer.write("transferencia bancaria.\n")
+        buffer.write("\n")
+        
+        # Firma y huellas
+        buffer.write("-" * 80 + "\n")
+        buffer.write("\n")
+        buffer.write(" " * 10 + "Recibo Conforme:" + "\n")
+        buffer.write("\n")
+        buffer.write(" " * 10 + "Firma, cédula" + "\n")
+        buffer.write("\n")
+        buffer.write(" " * 10 + "Sello humedo de la entidad de trabajo:" + "\n")
+        buffer.write("\n")
+        buffer.write("\n")
+        buffer.write(" " * 10 + "HUELLAS" + "\n")
+        buffer.write("\n")
+        buffer.write("\n")
+        buffer.write(" " * 50 + f"Fecha: {fecha_actual}" + "\n")
+        buffer.write("\n")
+        buffer.write("=" * 80 + "\n")
+        buffer.write(" " * 30 + "FIN DEL RECIBO" + "\n")
+        buffer.write("=" * 80 + "\n")
+        
+        # Crear archivo para descarga
+        mem = BytesIO()
+        mem.write(buffer.getvalue().encode('cp850'))
+        mem.seek(0)
+        buffer.close()
+        
+        return send_file(
+            mem,
+            as_attachment=True,
+            download_name=f"RECIBO_CESTA_{cedula}_{datetime.now().strftime('%Y%m%d')}.txt",
+            mimetype='text/plain'
+        )
+        
+    except Exception as e:
+        print(f"❌ Error generando recibo en matriz: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'error': f'Error interno: {str(e)}'}), 500
 
 # ============================================
 # GENERADOR DE PDF DEL LOTE DE NÓMINA
