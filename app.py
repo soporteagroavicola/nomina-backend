@@ -1520,7 +1520,7 @@ def recibo_cestaticket_html(id):
 def generar_recibo_cestaticket_matriz(id):
     """
     Genera un recibo de pago de Cestaticket en formato TXT para impresión en matriz de punto
-    Formato de media página (80 columnas) - Estilo Odoo
+    TODOS LOS MONTOS EN BOLÍVARES (Bs.) - SIN DÓLARES
     """
     try:
         conn = get_db_connection()
@@ -1601,9 +1601,9 @@ def generar_recibo_cestaticket_matriz(id):
         
         valor_diario_bs = valor_diario_usd * tasa_bcv
         faltas = 30 - dias_pagados
-        descuento_bs = faltas * valor_diario_usd * tasa_bcv
+        descuento_bs = faltas * valor_diario_bs
         
-        total_bs_calculado = dias_pagados * valor_diario_usd * tasa_bcv
+        total_bs_calculado = dias_pagados * valor_diario_bs
         if total_bs == 0:
             total_bs = total_bs_calculado
         
@@ -1611,11 +1611,15 @@ def generar_recibo_cestaticket_matriz(id):
         hora_actual = datetime.now().strftime("%H:%M:%S")
         numero_recibo = f"CESTA-{lote_id}-{cedula}"
         
+        # Formatear números en Bs
+        total_bs_str = f"{total_bs:,.2f}".replace(",", ".")
+        descuento_bs_str = f"{descuento_bs:,.2f}".replace(",", ".")
+        valor_diario_bs_str = f"{valor_diario_bs:,.2f}".replace(",", ".")
+        tasa_bcv_str = f"{tasa_bcv:,.4f}".replace(",", ".")
+        
         buffer = StringIO()
         
-        # ============================================
-        # HEADER - ESTILO ODOO
-        # ============================================
+        # HEADER
         buffer.write("=" * 80 + "\n")
         buffer.write("\n")
         buffer.write(" " * 20 + "AGROAVICOLA DEL LLANO, C.A." + "\n")
@@ -1630,9 +1634,7 @@ def generar_recibo_cestaticket_matriz(id):
         buffer.write(" " * 20 + "PAGO DE CESTATICKET SOCIALISTA" + "\n")
         buffer.write("\n")
         
-        # ============================================
         # DATOS DEL EMPLEADO
-        # ============================================
         buffer.write("-" * 80 + "\n")
         buffer.write(" " * 0 + "EMPLEADO:" + "\n")
         buffer.write("-" * 80 + "\n")
@@ -1641,39 +1643,31 @@ def generar_recibo_cestaticket_matriz(id):
         buffer.write(" " * 0 + "PERIODO: " + fecha_inicio + " al " + fecha_fin + "\n")
         buffer.write("-" * 80 + "\n")
         
-        # ============================================
         # DETALLE DEL PAGO
-        # ============================================
         buffer.write("\n")
         buffer.write(" " * 0 + "DETALLE DEL PAGO" + "\n")
         buffer.write("-" * 80 + "\n")
         buffer.write(" " * 0 + "CONCEPTO" + " " * 40 + "CANTIDAD" + " " * 15 + "MONTO Bs." + "\n")
         buffer.write("-" * 80 + "\n")
         
-        buffer.write(" " * 0 + "CESTA TICKET SOCIALISTA" + " " * 22 + f"{dias_pagados:>8} DÍAS" + " " * 5 + f"{total_bs:>14,.2f}".replace(",", ".") + "\n")
+        buffer.write(" " * 0 + "CESTA TICKET SOCIALISTA" + " " * 22 + f"{dias_pagados:>8} DÍAS" + " " * 5 + f"{total_bs_str:>14}" + "\n")
         
         if faltas > 0:
-            buffer.write(" " * 0 + "(-) DESCUENTO POR FALTAS" + " " * 17 + f"{faltas:>8} DÍAS" + " " * 5 + f"({descuento_bs:>13,.2f})".replace(",", ".") + "\n")
+            buffer.write(" " * 0 + "(-) DESCUENTO POR FALTAS" + " " * 17 + f"{faltas:>8} DÍAS" + " " * 5 + f"({descuento_bs_str:>13})" + "\n")
         
         buffer.write("-" * 80 + "\n")
-        buffer.write(" " * 0 + " " * 56 + "TOTAL A PAGAR: " + f"{total_bs:>14,.2f}".replace(",", ".") + "\n")
+        buffer.write(" " * 0 + " " * 56 + "TOTAL A PAGAR: " + f"{total_bs_str:>14}" + "\n")
         buffer.write("=" * 80 + "\n")
         
-        # ============================================
         # VALORES DE REFERENCIA
-        # ============================================
         buffer.write("\n")
         buffer.write(" " * 0 + "VALORES DE REFERENCIA" + "\n")
         buffer.write("-" * 80 + "\n")
-        buffer.write(" " * 0 + "VALOR MENSUAL (USD): " + f"${valor_mensual_usd:>8,.2f}".replace(",", ".") + "\n")
-        buffer.write(" " * 0 + "VALOR POR DÍA (USD): " + f"${valor_diario_usd:>8,.4f}".replace(",", ".") + "\n")
-        buffer.write(" " * 0 + "VALOR POR DÍA (Bs.): " + f"Bs. {valor_diario_bs:>8,.2f}".replace(",", ".") + "\n")
-        buffer.write(" " * 0 + "TASA BCV: " + f"Bs. {tasa_bcv:>12,.4f}".replace(",", ".") + "\n")
+        buffer.write(" " * 0 + "VALOR POR DÍA (Bs.): " + f"{valor_diario_bs_str:>14}" + "\n")
+        buffer.write(" " * 0 + "TASA BCV: " + f"{tasa_bcv_str:>14}" + "\n")
         buffer.write("-" * 80 + "\n")
         
-        # ============================================
         # DECLARACIÓN Y FIRMAS
-        # ============================================
         buffer.write("\n")
         buffer.write("DECLARACIÓN Y FIRMAS" + "\n")
         buffer.write("-" * 80 + "\n")
