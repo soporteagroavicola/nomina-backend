@@ -1095,7 +1095,6 @@ def recibo_cestaticket_html(id):
         if not row:
             return "<h1>Recibo no encontrado</h1><p>El ID del recibo no existe.</p>", 404
 
-        # Obtener parámetros
         conn = get_db_connection()
         if conn:
             cur = conn.cursor()
@@ -1131,7 +1130,6 @@ def recibo_cestaticket_html(id):
         total_bs = float(row[8]) if row[8] else 0
         lote_id = row[10]
         
-        # Calcular valor diario en Bs
         valor_diario_usd = float(row[5]) if row[5] else (40.0 / 30)
         valor_diario_bs = valor_diario_usd * tasa_bcv
         
@@ -1146,13 +1144,11 @@ def recibo_cestaticket_html(id):
         hora_actual = datetime.now().strftime("%H:%M:%S")
         numero_recibo = f"CESTA-{lote_id}-{cedula}"
 
-        # Formatear números en Bs
         total_bs_formateado = f"{total_bs:,.2f}".replace(",", ".")
         descuento_bs_formateado = f"{descuento_bs:,.2f}".replace(",", ".")
         valor_diario_bs_formateado = f"{valor_diario_bs:,.2f}".replace(",", ".")
         tasa_bcv_formateada = f"{tasa_bcv:,.4f}".replace(",", ".")
 
-        # Generar HTML - SOLO EN BOLÍVARES
         html = f'''
         <!DOCTYPE html>
         <html lang="es">
@@ -1491,7 +1487,6 @@ def recibo_nomina_html(id_nomina):
         if not row:
             return "<h1>Recibo no encontrado</h1><p>El ID de la nómina no existe.</p>", 404
 
-        # Obtener parámetros de la empresa
         conn = get_db_connection()
         rif_empresa = "J-505631349"
         nombre_cuenta = "AGROAVICOLA DEL LLANO, C.A"
@@ -1508,7 +1503,6 @@ def recibo_nomina_html(id_nomina):
             cur.close()
             conn.close()
 
-        # Desempaquetar datos
         (id_nomina, id_empleado, fecha_inicio, fecha_fin, tipo, faltas_dias,
          salario_base_usd, horas_extras_usd, bono_complementario_usd,
          total_asignaciones_usd, total_deducciones_usd, neto_pagar_usd,
@@ -1522,7 +1516,6 @@ def recibo_nomina_html(id_nomina):
         fecha_fin_str = fecha_fin.strftime("%d/%m/%Y") if fecha_fin else ''
         fecha_calculo_str = fecha_calculo.strftime("%d/%m/%Y") if fecha_calculo else datetime.now().strftime("%d/%m/%Y")
 
-        # Convertir a Bs
         salario_base_bs = salario_base_usd * tasa_bcv
         horas_extras_bs = horas_extras_usd * tasa_bcv
         bono_comp_bs = bono_complementario_usd * tasa_bcv
@@ -1531,12 +1524,10 @@ def recibo_nomina_html(id_nomina):
         neto_bs = neto_pagar_bs
         salario_mensual_bs = salario_mensual_usd * tasa_bcv
 
-        # Calcular pago 60/40 (para mostrar si aplica)
         neto_base_bs = neto_bs - bono_comp_bs
         pago_60_bs = (neto_base_bs * 0.60) + bono_comp_bs if neto_pagar_usd > 0 else 0
         pago_40_bs = neto_base_bs * 0.40 if neto_pagar_usd > 0 else 0
 
-        # Formatear números
         def fmt(n):
             return f"{n:,.2f}".replace(",", ".")
 
@@ -1973,7 +1964,6 @@ def generar_recibo_cestaticket_matriz(id):
         hora_actual = datetime.now().strftime("%H:%M:%S")
         numero_recibo = f"CESTA-{lote_id}-{cedula}"
         
-        # Formatear números en Bs
         total_bs_str = f"{total_bs:,.2f}".replace(",", ".")
         descuento_bs_str = f"{descuento_bs:,.2f}".replace(",", ".")
         valor_diario_bs_str = f"{valor_diario_bs:,.2f}".replace(",", ".")
@@ -1981,7 +1971,6 @@ def generar_recibo_cestaticket_matriz(id):
         
         buffer = StringIO()
         
-        # HEADER
         buffer.write("=" * 80 + "\n")
         buffer.write("\n")
         buffer.write(" " * 20 + "AGROAVICOLA DEL LLANO, C.A." + "\n")
@@ -1996,7 +1985,6 @@ def generar_recibo_cestaticket_matriz(id):
         buffer.write(" " * 20 + "PAGO DE CESTATICKET SOCIALISTA" + "\n")
         buffer.write("\n")
         
-        # DATOS DEL EMPLEADO
         buffer.write("-" * 80 + "\n")
         buffer.write(" " * 0 + "EMPLEADO:" + "\n")
         buffer.write("-" * 80 + "\n")
@@ -2005,7 +1993,6 @@ def generar_recibo_cestaticket_matriz(id):
         buffer.write(" " * 0 + "PERIODO: " + fecha_inicio + " al " + fecha_fin + "\n")
         buffer.write("-" * 80 + "\n")
         
-        # DETALLE DEL PAGO
         buffer.write("\n")
         buffer.write(" " * 0 + "DETALLE DEL PAGO" + "\n")
         buffer.write("-" * 80 + "\n")
@@ -2021,7 +2008,6 @@ def generar_recibo_cestaticket_matriz(id):
         buffer.write(" " * 0 + " " * 56 + "TOTAL A PAGAR: " + f"{total_bs_str:>14}" + "\n")
         buffer.write("=" * 80 + "\n")
         
-        # VALORES DE REFERENCIA
         buffer.write("\n")
         buffer.write(" " * 0 + "VALORES DE REFERENCIA" + "\n")
         buffer.write("-" * 80 + "\n")
@@ -2029,7 +2015,6 @@ def generar_recibo_cestaticket_matriz(id):
         buffer.write(" " * 0 + "TASA BCV: " + f"{tasa_bcv_str:>14}" + "\n")
         buffer.write("-" * 80 + "\n")
         
-        # DECLARACIÓN Y FIRMAS
         buffer.write("\n")
         buffer.write("DECLARACIÓN Y FIRMAS" + "\n")
         buffer.write("-" * 80 + "\n")
@@ -2745,76 +2730,100 @@ def generar_recibo_pdf(id_nomina):
         return jsonify({'error': str(e)}), 500
 
 # ============================================
-# ELIMINAR LOTE DE NÓMINA
+# 🔥 RUTA UNIFICADA PARA VER Y ELIMINAR LOTE (SOLUCIÓN AL 405)
 # ============================================
-@app.route('/api/lotes/<int:id>', methods=['DELETE'])
+@app.route('/api/lotes/<int:id>', methods=['GET', 'DELETE'])
 @login_required
-def eliminar_lote(id):
-    conn = get_db_connection()
-    if not conn: return jsonify({'error': 'Error de conexión'}), 500
-    cur = conn.cursor()
-    try:
-        cur.execute("DELETE FROM nominas WHERE lote_id = %s", (id,))
-        cur.execute("DELETE FROM lotes_nomina WHERE id_lote = %s", (id,))
-        conn.commit()
-        return jsonify({'mensaje': 'Lote eliminado exitosamente'})
-    except Exception as e:
-        conn.rollback()
-        return jsonify({'error': str(e)}), 400
-    finally:
-        cur.close(); conn.close()
+def manejar_lote(id):
+    # ------------------------
+    # SI ES UN GET (VER DETALLE)
+    # ------------------------
+    if request.method == 'GET':
+        try:
+            conn = get_db_connection()
+            if not conn: return jsonify({'error': 'Error de conexión'}), 500
+            cur = conn.cursor()
+            cur.execute("SELECT * FROM lotes_nomina WHERE id_lote = %s", (id,))
+            lote_row = cur.fetchone()
+            if not lote_row: return jsonify({'error': 'Lote no encontrado'}), 404
+            
+            cur.execute('''
+                SELECT 
+                    n.id_nomina, n.id_empleado, n.fecha_inicio, n.fecha_fin, 
+                    n.tipo, n.faltas_dias, n.salario_base_usd, 
+                    n.horas_extras_usd, n.bono_complementario_usd, 
+                    n.total_asignaciones_usd, n.total_deducciones_usd, 
+                    n.neto_pagar_usd, n.neto_pagar_bs, 
+                    n.sso_usd, n.rpe_usd, n.faov_usd,
+                    n.sso_bs, n.rpe_bs, n.faov_bs,
+                    e.nombres, e.apellidos, e.cedula
+                FROM nominas n
+                JOIN empleados e ON n.id_empleado = e.id_empleado
+                WHERE n.lote_id = %s
+                ORDER BY e.nombres
+            ''', (id,))
+            nominas_rows = cur.fetchall()
+            cur.close(); conn.close()
 
-# ============================================
-# HISTORIAL DE NÓMINAS
-# ============================================
-@app.route('/api/lotes', methods=['GET'])
-@login_required
-def get_lotes():
-    print(f"🔍 GET /api/lotes - Session user: {session.get('user_id')}")
-    search = request.args.get('search', '')
-    conn = get_db_connection()
-    if not conn:
-        print("❌ Error de conexión a BD")
-        return jsonify([])
-    cur = conn.cursor()
-    query = '''
-        SELECT 
-            l.id_lote, l.descripcion, l.fecha_calculo, 
-            l.total_usd, l.total_bs, l.cantidad_empleados,
-            STRING_AGG(DISTINCT s.nombre, ', ') as sucursales
-        FROM lotes_nomina l
-        LEFT JOIN nominas n ON l.id_lote = n.lote_id
-        LEFT JOIN empleados e ON n.id_empleado = e.id_empleado
-        LEFT JOIN sucursales s ON e.sucursal_id = s.id_sucursal
-        WHERE 1=1
-    '''
-    params = []
-    if search:
-        query += " AND (l.descripcion ILIKE %s OR CAST(l.id_lote AS TEXT) ILIKE %s)"
-        sp = f"%{search}%"
-        params.extend([sp, sp])
-    query += " GROUP BY l.id_lote ORDER BY l.fecha_calculo DESC, l.id_lote DESC"
-    
-    try:
-        cur.execute(query, params)
-        rows = cur.fetchall()
-        print(f"✅ Lotes encontrados: {len(rows)}")
-    except Exception as e:
-        print(f"❌ Error en query: {e}")
-        cur.close(); conn.close()
-        return jsonify([])
-    
-    cur.close(); conn.close()
-    
-    return jsonify([{
-        'id_lote': r[0],
-        'descripcion': r[1],
-        'fecha_calculo': r[2].isoformat() if r[2] else None,
-        'total_usd': float(r[3]) if r[3] else 0,
-        'total_bs': float(r[4]) if r[4] else 0,
-        'cantidad_empleados_lote': r[5] if r[5] else 0,
-        'sucursales_involucradas': r[6] or 'Sin sucursal'
-    } for r in rows])
+            nominas = []
+            for n in nominas_rows:
+                nominas.append({
+                    'id_nomina': n[0],
+                    'id_empleado': n[1],
+                    'fecha_inicio': n[2].isoformat() if n[2] else None,
+                    'fecha_fin': n[3].isoformat() if n[3] else None,
+                    'tipo': n[4],
+                    'faltas_dias': n[5],
+                    'salario_base_usd': float(n[6]) if n[6] else 0,
+                    'horas_extras_usd': float(n[7]) if n[7] else 0,
+                    'bono_complementario_usd': float(n[8]) if n[8] else 0,
+                    'total_asignaciones_usd': float(n[9]) if n[9] else 0,
+                    'total_deducciones_usd': float(n[10]) if n[10] else 0,
+                    'neto_pagar_usd': float(n[11]) if n[11] else 0,
+                    'neto_pagar_bs': float(n[12]) if n[12] else 0,
+                    'sso_usd': float(n[13]) if n[13] else 0,
+                    'rpe_usd': float(n[14]) if n[14] else 0,
+                    'faov_usd': float(n[15]) if n[15] else 0,
+                    'sso_bs': float(n[16]) if n[16] else 0,
+                    'rpe_bs': float(n[17]) if n[17] else 0,
+                    'faov_bs': float(n[18]) if n[18] else 0,
+                    'nombres': n[19],
+                    'apellidos': n[20],
+                    'cedula': n[21]
+                })
+
+            return jsonify({
+                'id_lote': lote_row[0],
+                'descripcion': lote_row[1],
+                'fecha_calculo': lote_row[2].isoformat() if lote_row[2] else None,
+                'total_usd': float(lote_row[3]) if lote_row[3] else 0,
+                'total_bs': float(lote_row[4]) if lote_row[4] else 0,
+                'cantidad_empleados': lote_row[5] if lote_row[5] else 0,
+                'nominas': nominas
+            })
+        except Exception as e:
+            print(f"❌ Error crítico en get_lote_detalle: {e}")
+            import traceback
+            traceback.print_exc()
+            return jsonify({'error': f'Error interno del servidor: {str(e)}'}), 500
+
+    # ------------------------
+    # SI ES UN DELETE (ELIMINAR)
+    # ------------------------
+    elif request.method == 'DELETE':
+        conn = get_db_connection()
+        if not conn: return jsonify({'error': 'Error de conexión'}), 500
+        cur = conn.cursor()
+        try:
+            cur.execute("DELETE FROM nominas WHERE lote_id = %s", (id,))
+            cur.execute("DELETE FROM lotes_nomina WHERE id_lote = %s", (id,))
+            conn.commit()
+            return jsonify({'mensaje': 'Lote eliminado exitosamente'})
+        except Exception as e:
+            conn.rollback()
+            return jsonify({'error': str(e)}), 400
+        finally:
+            cur.close(); conn.close()
 
 # ============================================
 # GENERADOR DE ARCHIVO DE PAGO (TXT)
