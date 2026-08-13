@@ -22,7 +22,7 @@ app.config.update(
     SESSION_COOKIE_SECURE=True,
     PERMANENT_SESSION_LIFETIME=timedelta(hours=8),
     SESSION_COOKIE_NAME='nomina_session',
-    # Estas 2 líneas son las claves para Render:
+    # CAMBIO CLAVE: Forzamos que la cookie se aplique a cualquier subdominio y ruta
     SESSION_COOKIE_DOMAIN=False,
     SESSION_COOKIE_PATH='/'
 )
@@ -187,10 +187,15 @@ def login():
     user = cur.fetchone()
     cur.close(); conn.close()
     if user and check_password_hash(user[1], password):
+        session.clear()  # Limpiamos cualquier sesión anterior
         session['user_id'] = user[0]
         session['username'] = username
         session.permanent = True
-        return jsonify({'mensaje': 'Inicio de sesión exitoso', 'username': username})
+        
+        # 🔥 CAMBIO CRUCIAL: Forzamos a Flask a escribir la sesión en la respuesta AHORA MISMO
+        response = jsonify({'mensaje': 'Inicio de sesión exitoso', 'username': username})
+        response.headers.add('Set-Cookie', app.session_interface.get_cookie_domain(app))
+        return response
     return jsonify({'error': 'Usuario o contraseña incorrectos'}), 401
 
 @app.route('/api/logout', methods=['POST'])
@@ -2585,12 +2590,13 @@ def eliminar_lote(id):
 @app.route('/api/lotes', methods=['GET'])
 @login_required
 def get_lotes():
-    print(f"🔍 GET /api/lotes - Session user: {session.get('user_id')}")
+    print(f"🔍 GET /api/lotes - Session user ID: {session.get('user_id')}")
     search = request.args.get('search', '')
     conn = get_db_connection()
     if not conn:
-        print("❌ Error de conexión a BD")
+        print("❌ Error de conexión a BD en /api/lotes")
         return jsonify([])
+    
     cur = conn.cursor()
     query = '''
         SELECT 
@@ -2613,9 +2619,9 @@ def get_lotes():
     try:
         cur.execute(query, params)
         rows = cur.fetchall()
-        print(f"✅ Lotes encontrados: {len(rows)}")
+        print(f"✅ Lotes encontrados en BD: {len(rows)}")
     except Exception as e:
-        print(f"❌ Error en query: {e}")
+        print(f"❌ Error en query de /api/lotes: {e}")
         cur.close(); conn.close()
         return jsonify([])
     
@@ -2630,7 +2636,6 @@ def get_lotes():
         'cantidad_empleados_lote': r[5] if r[5] else 0,
         'sucursales_involucradas': r[6] or 'Sin sucursal'
     } for r in rows])
-
 # ============================================
 # GENERADOR DE ARCHIVO DE PAGO (TXT)
 # ============================================
