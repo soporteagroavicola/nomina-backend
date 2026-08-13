@@ -1132,9 +1132,6 @@ def generar_recibo_cestaticket(id):
         print(f"❌ Error fatal en generar_recibo_cestaticket: {e}")
         return jsonify({'error': str(e)}), 500
 
-# ============================================
-# 🆕 RECIBO CESTATICKET EN HTML - ESTILO ODOO (VISTA PREVIA / IMPRESIÓN)
-# ============================================
 @app.route('/api/recibo_cestaticket_html/<int:id>', methods=['GET'])
 @login_required
 def recibo_cestaticket_html(id):
@@ -1144,7 +1141,7 @@ def recibo_cestaticket_html(id):
     try:
         conn = get_db_connection()
         if not conn:
-            return jsonify({'error': 'Error de conexión'}), 500
+            return "<h1>Error de conexión a la base de datos</h1>", 500
         cur = conn.cursor()
         
         cur.execute('''
@@ -1175,7 +1172,7 @@ def recibo_cestaticket_html(id):
         conn.close()
         
         if not row:
-            return jsonify({'error': 'Cestaticket no encontrado'}), 404
+            return "<h1>Recibo no encontrado</h1><p>El ID del recibo no existe.</p>", 404
 
         # Obtener parámetros
         conn = get_db_connection()
@@ -1231,7 +1228,7 @@ def recibo_cestaticket_html(id):
         hora_actual = datetime.now().strftime("%H:%M:%S")
         numero_recibo = f"CESTA-{lote_id}-{cedula}"
 
-        # Generar HTML
+        # Generar HTML (mismo que antes, pero asegurando que no sea JSON)
         html = f'''
         <!DOCTYPE html>
         <html lang="es">
@@ -1378,7 +1375,6 @@ def recibo_cestaticket_html(id):
         </head>
         <body>
             <div class="recibo-container" id="recibo">
-                <!-- Botones de acción - NO se imprimen -->
                 <div class="print-header no-print">
                     <span style="font-weight: bold; font-size: 14px;">📄 Recibo de Cestaticket</span>
                     <div>
@@ -1387,7 +1383,6 @@ def recibo_cestaticket_html(id):
                     </div>
                 </div>
 
-                <!-- HEADER -->
                 <div class="header">
                     <div class="title">AGROAVICOLA DEL LLANO, C.A.</div>
                     <div class="rif">RIF: {rif_empresa}</div>
@@ -1402,7 +1397,6 @@ def recibo_cestaticket_html(id):
 
                 <hr class="separator">
 
-                <!-- EMPLEADO -->
                 <div class="section">
                     <div class="section-title">EMPLEADO</div>
                     <div class="row"><span class="row-label">NOMBRE:</span> <span>{nombre_completo}</span></div>
@@ -1414,7 +1408,6 @@ def recibo_cestaticket_html(id):
 
                 <hr class="separator">
 
-                <!-- DETALLE DEL PAGO -->
                 <div class="section">
                     <div class="section-title">DETALLE DEL PAGO</div>
                     <table class="table">
@@ -1444,7 +1437,6 @@ def recibo_cestaticket_html(id):
 
                 <hr class="separator">
 
-                <!-- VALORES DE REFERENCIA -->
                 <div class="valores">
                     <div class="row"><span class="row-label">VALOR MENSUAL (USD):</span> <span>${valor_mensual_usd:.2f}</span></div>
                     <div class="row"><span class="row-label">VALOR POR DÍA (USD):</span> <span>${valor_diario_usd:.4f}</span></div>
@@ -1454,7 +1446,6 @@ def recibo_cestaticket_html(id):
 
                 <hr class="separator">
 
-                <!-- DECLARACIÓN Y FIRMAS -->
                 <div class="declaracion">
                     <div style="font-weight:bold; margin-bottom:4px;">DECLARACIÓN Y FIRMAS</div>
                     <p>Declaro que he recibido el total indicado y recibo de conformidad
@@ -1484,19 +1475,15 @@ def recibo_cestaticket_html(id):
                     Fecha: {fecha_actual}
                 </div>
 
-                <!-- FOOTER -->
                 <div class="footer">
                     FIN DEL RECIBO &nbsp;|&nbsp; LOTE: {lote_id} - ID: {id}
                 </div>
             </div>
 
             <script>
-                // Función para imprimir el recibo
                 function imprimirRecibo() {{
                     window.print();
                 }}
-
-                // Si se presiona Ctrl+P o Cmd+P, redirigir a nuestra función
                 document.addEventListener('keydown', function(e) {{
                     if ((e.ctrlKey || e.metaKey) && e.key === 'p') {{
                         e.preventDefault();
