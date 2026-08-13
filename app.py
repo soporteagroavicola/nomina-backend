@@ -328,7 +328,7 @@ def get_empleados():
     } for r in rows])
 
 # ============================================
-# 🆕 ENDPOINT: EMPLEADOS CON SUCURSAL (PARA CESTATICKET)
+# ENDPOINT: EMPLEADOS CON SUCURSAL (PARA CESTATICKET)
 # ============================================
 @app.route('/api/empleados_con_sucursal', methods=['GET'])
 @login_required
@@ -435,7 +435,7 @@ def actualizar_empleado(id):
     finally:
         cur.close(); conn.close()
 
-@app.route('/api/empleados/<int:id>', methods(['DELETE'])
+@app.route('/api/empleados/<int:id>', methods=['DELETE'])
 @login_required
 def eliminar_empleado(id):
     conn = get_db_connection()
@@ -1495,11 +1495,6 @@ def recibo_cestaticket_html(id):
                 function imprimirRecibo() {{
                     window.print();
                 }}
-
-                // Detectar cuando se cierra el diálogo de impresión
-                window.addEventListener('afterprint', function() {{
-                    // No hacer nada, solo cerrar
-                }});
 
                 // Si se presiona Ctrl+P o Cmd+P, redirigir a nuestra función
                 document.addEventListener('keydown', function(e) {{
