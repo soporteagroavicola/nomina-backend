@@ -856,7 +856,7 @@ def get_lote_detalle(id):
         lote_row = cur.fetchone()
         if not lote_row: return jsonify({'error': 'Lote no encontrado'}), 404
         
-        # Obtener tasa BCV para conversión
+        # Obtener tasa BCV
         cur.execute("SELECT valor FROM parametros WHERE clave = 'tasa_bcv'")
         tasa_row = cur.fetchone()
         tasa_bcv = float(tasa_row[0]) if tasa_row else 755.1552
@@ -877,22 +877,26 @@ def get_lote_detalle(id):
             ORDER BY e.nombres
         ''', (id,))
         nominas_rows = cur.fetchall()
-        cur.close(); conn.close()
+        cur.close()
+        conn.close()
 
         nominas = []
         for n in nominas_rows:
-            # Convertir todos los montos a Bs usando la tasa BCV
-            salario_base_bs = float(n[6]) * tasa_bcv if n[6] else 0
-            horas_extras_bs = float(n[7]) * tasa_bcv if n[7] else 0
-            bono_complementario_bs = float(n[8]) * tasa_bcv if n[8] else 0
-            total_asignaciones_bs = float(n[9]) * tasa_bcv if n[9] else 0
-            total_deducciones_bs = float(n[10]) * tasa_bcv if n[10] else 0
-            neto_pagar_bs = float(n[12]) if n[12] else 0  # Ya viene en Bs
-            sso_bs = float(n[16]) if n[16] else 0
-            rpe_bs = float(n[17]) if n[17] else 0
-            faov_bs = float(n[18]) if n[18] else 0
+            # Extraer valores
+            salario_base_usd = float(n[6]) if n[6] is not None else 0
+            horas_extras_usd = float(n[7]) if n[7] is not None else 0
+            bono_complementario_usd = float(n[8]) if n[8] is not None else 0
+            total_asignaciones_usd = float(n[9]) if n[9] is not None else 0
+            total_deducciones_usd = float(n[10]) if n[10] is not None else 0
+            neto_pagar_usd = float(n[11]) if n[11] is not None else 0
+            neto_pagar_bs = float(n[12]) if n[12] is not None else 0
             
-            # Calcular base 60% en Bs
+            # Convertir a Bs
+            salario_base_bs = salario_base_usd * tasa_bcv
+            horas_extras_bs = horas_extras_usd * tasa_bcv
+            bono_complementario_bs = bono_complementario_usd * tasa_bcv
+            total_asignaciones_bs = total_asignaciones_usd * tasa_bcv
+            total_deducciones_bs = total_deducciones_usd * tasa_bcv
             base_60_bs = salario_base_bs * 0.60
             
             nominas.append({
@@ -901,38 +905,38 @@ def get_lote_detalle(id):
                 'fecha_inicio': n[2].isoformat() if n[2] else None,
                 'fecha_fin': n[3].isoformat() if n[3] else None,
                 'tipo': n[4],
-                'faltas_dias': n[5],
-                'salario_base_usd': float(n[6]) if n[6] else 0,
+                'faltas_dias': n[5] if n[5] is not None else 0,
+                'salario_base_usd': salario_base_usd,
                 'salario_base_bs': salario_base_bs,
                 'base_60_bs': base_60_bs,
-                'horas_extras_usd': float(n[7]) if n[7] else 0,
+                'horas_extras_usd': horas_extras_usd,
                 'horas_extras_bs': horas_extras_bs,
-                'bono_complementario_usd': float(n[8]) if n[8] else 0,
+                'bono_complementario_usd': bono_complementario_usd,
                 'bono_complementario_bs': bono_complementario_bs,
-                'total_asignaciones_usd': float(n[9]) if n[9] else 0,
+                'total_asignaciones_usd': total_asignaciones_usd,
                 'total_asignaciones_bs': total_asignaciones_bs,
-                'total_deducciones_usd': float(n[10]) if n[10] else 0,
+                'total_deducciones_usd': total_deducciones_usd,
                 'total_deducciones_bs': total_deducciones_bs,
-                'neto_pagar_usd': float(n[11]) if n[11] else 0,
+                'neto_pagar_usd': neto_pagar_usd,
                 'neto_pagar_bs': neto_pagar_bs,
-                'sso_usd': float(n[13]) if n[13] else 0,
-                'sso_bs': sso_bs,
-                'rpe_usd': float(n[14]) if n[14] else 0,
-                'rpe_bs': rpe_bs,
-                'faov_usd': float(n[15]) if n[15] else 0,
-                'faov_bs': faov_bs,
-                'nombres': n[19],
-                'apellidos': n[20],
-                'cedula': n[21]
+                'sso_usd': float(n[13]) if n[13] is not None else 0,
+                'sso_bs': float(n[16]) if n[16] is not None else 0,
+                'rpe_usd': float(n[14]) if n[14] is not None else 0,
+                'rpe_bs': float(n[17]) if n[17] is not None else 0,
+                'faov_usd': float(n[15]) if n[15] is not None else 0,
+                'faov_bs': float(n[18]) if n[18] is not None else 0,
+                'nombres': n[19] if len(n) > 19 else '',
+                'apellidos': n[20] if len(n) > 20 else '',
+                'cedula': n[21] if len(n) > 21 else ''
             })
 
         return jsonify({
             'id_lote': lote_row[0],
-            'descripcion': lote_row[1],
+            'descripcion': lote_row[1] if lote_row[1] else 'Sin descripción',
             'fecha_calculo': lote_row[2].isoformat() if lote_row[2] else None,
-            'total_usd': float(lote_row[3]) if lote_row[3] else 0,
-            'total_bs': float(lote_row[4]) if lote_row[4] else 0,
-            'cantidad_empleados': lote_row[5] if lote_row[5] else 0,
+            'total_usd': float(lote_row[3]) if lote_row[3] is not None else 0,
+            'total_bs': float(lote_row[4]) if lote_row[4] is not None else 0,
+            'cantidad_empleados': lote_row[5] if lote_row[5] is not None else 0,
             'tasa_bcv': tasa_bcv,
             'nominas': nominas
         })
