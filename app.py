@@ -42,9 +42,8 @@ CORS(app,
      origins=frontend_urls, 
      supports_credentials=True, 
      allow_headers=["Content-Type", "Authorization"],
-     expose_headers=["Content-Type", "Authorization"],
+     # 🔥 ELIMINA ESTA LÍNEA: expose_headers=["Content-Type", "Authorization"],
      methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"])
-
 def get_db_connection():
     database_url = os.getenv('DATABASE_URL', 'postgresql://nomina_db_naiu_user:58sgnjVGnVRtLVbOVqYiA7d41VXwsHUH@dpg-d9prbrr9ik0c73ci4e0g-a.oregon-postgres.render.com/nomina_db_naiu')
     try:
