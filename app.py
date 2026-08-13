@@ -845,82 +845,103 @@ def get_lotes_cestaticket():
         'tasa_bcv': float(r[5]) if r[5] else 0, 'total_empleados_detalle': r[6]
     } for r in rows])
 
-@app.route('/api/lotes_cestaticket/<int:id>', methods=['GET'])
+@app.route('/api/lotes/<int:id>', methods=['GET'])
 @login_required
-def get_lote_detalle_cestaticket(id):
+def get_lote_detalle(id):
     try:
         conn = get_db_connection()
-        if not conn:
-            return jsonify({'error': 'Error de conexión'}), 500
+        if not conn: return jsonify({'error': 'Error de conexión'}), 500
         cur = conn.cursor()
-        
-        cur.execute("SELECT * FROM cestaticket_lotes WHERE id_lote = %s", (id,))
+        cur.execute("SELECT * FROM lotes_nomina WHERE id_lote = %s", (id,))
         lote_row = cur.fetchone()
-        if not lote_row:
-            return jsonify({'error': 'Lote no encontrado'}), 404
+        if not lote_row: return jsonify({'error': 'Lote no encontrado'}), 404
+        
+        # Obtener tasa BCV
+        cur.execute("SELECT valor FROM parametros WHERE clave = 'tasa_bcv'")
+        tasa_row = cur.fetchone()
+        tasa_bcv = float(tasa_row[0]) if tasa_row else 755.1552
         
         cur.execute('''
             SELECT 
-                c.id, 
-                c.id_empleado, 
-                c.fecha_inicio, 
-                c.fecha_fin, 
-                c.dias_pagados, 
-                c.valor_diario_usd, 
-                c.tasa_bcv, 
-                c.total_usd, 
-                c.total_bs, 
-                c.descripcion, 
-                c.lote_id,
-                e.nombres, 
-                e.apellidos, 
-                e.cedula
-            FROM cestaticket_nominas c
-            JOIN empleados e ON c.id_empleado = e.id_empleado
-            WHERE c.lote_id = %s
+                n.id_nomina, n.id_empleado, n.fecha_inicio, n.fecha_fin, 
+                n.tipo, n.faltas_dias, n.salario_base_usd, 
+                n.horas_extras_usd, n.bono_complementario_usd, 
+                n.total_asignaciones_usd, n.total_deducciones_usd, 
+                n.neto_pagar_usd, n.neto_pagar_bs, 
+                n.sso_usd, n.rpe_usd, n.faov_usd,
+                n.sso_bs, n.rpe_bs, n.faov_bs,
+                e.nombres, e.apellidos, e.cedula
+            FROM nominas n
+            JOIN empleados e ON n.id_empleado = e.id_empleado
+            WHERE n.lote_id = %s
             ORDER BY e.nombres
         ''', (id,))
-        
         nominas_rows = cur.fetchall()
         cur.close()
         conn.close()
 
         nominas = []
-        for c in nominas_rows:
-            dias_pagados = c[4] if c[4] else 0
-            valor_diario = float(c[5]) if c[5] else 0
-            total_usd = float(c[7]) if c[7] else 0
-            valor_mensual_usd = dias_pagados * valor_diario
+        for n in nominas_rows:
+            # Extraer valores
+            salario_base_usd = float(n[6]) if n[6] is not None else 0
+            horas_extras_usd = float(n[7]) if n[7] is not None else 0
+            bono_complementario_usd = float(n[8]) if n[8] is not None else 0
+            total_asignaciones_usd = float(n[9]) if n[9] is not None else 0
+            total_deducciones_usd = float(n[10]) if n[10] is not None else 0
+            neto_pagar_usd = float(n[11]) if n[11] is not None else 0
+            neto_pagar_bs = float(n[12]) if n[12] is not None else 0
+            
+            # Convertir a Bs
+            salario_base_bs = salario_base_usd * tasa_bcv
+            horas_extras_bs = horas_extras_usd * tasa_bcv
+            bono_complementario_bs = bono_complementario_usd * tasa_bcv
+            total_asignaciones_bs = total_asignaciones_usd * tasa_bcv
+            total_deducciones_bs = total_deducciones_usd * tasa_bcv
+            base_60_bs = salario_base_bs * 0.60
             
             nominas.append({
-                'id': c[0],
-                'id_empleado': c[1],
-                'fecha_inicio': c[2].isoformat() if c[2] else None,
-                'fecha_fin': c[3].isoformat() if c[3] else None,
-                'dias_pagados': dias_pagados,
-                'valor_diario_usd': valor_diario,
-                'tasa_bcv': float(c[6]) if c[6] else 0,
-                'total_usd': total_usd,
-                'total_bs': float(c[8]) if c[8] else 0,
-                'descripcion': c[9] if c[9] else '',
-                'lote_id': c[10] if c[10] else None,
-                'nombres': c[11] if c[11] else '',
-                'apellidos': c[12] if c[12] else '',
-                'cedula': c[13] if c[13] else '',
-                'valor_mensual_usd': valor_mensual_usd
+                'id_nomina': n[0],
+                'id_empleado': n[1],
+                'fecha_inicio': n[2].isoformat() if n[2] else None,
+                'fecha_fin': n[3].isoformat() if n[3] else None,
+                'tipo': n[4],
+                'faltas_dias': n[5] if n[5] is not None else 0,
+                'salario_base_usd': salario_base_usd,
+                'salario_base_bs': salario_base_bs,
+                'base_60_bs': base_60_bs,
+                'horas_extras_usd': horas_extras_usd,
+                'horas_extras_bs': horas_extras_bs,
+                'bono_complementario_usd': bono_complementario_usd,
+                'bono_complementario_bs': bono_complementario_bs,
+                'total_asignaciones_usd': total_asignaciones_usd,
+                'total_asignaciones_bs': total_asignaciones_bs,
+                'total_deducciones_usd': total_deducciones_usd,
+                'total_deducciones_bs': total_deducciones_bs,
+                'neto_pagar_usd': neto_pagar_usd,
+                'neto_pagar_bs': neto_pagar_bs,
+                'sso_usd': float(n[13]) if n[13] is not None else 0,
+                'sso_bs': float(n[16]) if n[16] is not None else 0,
+                'rpe_usd': float(n[14]) if n[14] is not None else 0,
+                'rpe_bs': float(n[17]) if n[17] is not None else 0,
+                'faov_usd': float(n[15]) if n[15] is not None else 0,
+                'faov_bs': float(n[18]) if n[18] is not None else 0,
+                'nombres': n[19] if len(n) > 19 else '',
+                'apellidos': n[20] if len(n) > 20 else '',
+                'cedula': n[21] if len(n) > 21 else ''
             })
 
         return jsonify({
             'id_lote': lote_row[0],
-            'descripcion': lote_row[1],
+            'descripcion': lote_row[1] if lote_row[1] else 'Sin descripción',
             'fecha_calculo': lote_row[2].isoformat() if lote_row[2] else None,
-            'total_bs': float(lote_row[3]) if lote_row[3] else 0,
-            'cantidad_empleados_lote': lote_row[4] if lote_row[4] else 0,
-            'tasa_bcv': float(lote_row[5]) if lote_row[5] else 0,
+            'total_usd': float(lote_row[3]) if lote_row[3] is not None else 0,
+            'total_bs': float(lote_row[4]) if lote_row[4] is not None else 0,
+            'cantidad_empleados': lote_row[5] if lote_row[5] is not None else 0,
+            'tasa_bcv': tasa_bcv,
             'nominas': nominas
         })
     except Exception as e:
-        print(f"❌ Error crítico en get_lote_detalle_cestaticket: {e}")
+        print(f"❌ Error crítico en get_lote_detalle: {e}")
         import traceback
         traceback.print_exc()
         return jsonify({'error': f'Error interno del servidor: {str(e)}'}), 500
@@ -1132,19 +1153,17 @@ def generar_recibo_cestaticket(id):
         print(f"❌ Error fatal en generar_recibo_cestaticket: {e}")
         return jsonify({'error': str(e)}), 500
 
-# ============================================
-# 🆕 RECIBO CESTATICKET EN HTML - ESTILO ODOO (VISTA PREVIA / IMPRESIÓN)
-# ============================================
 @app.route('/api/recibo_cestaticket_html/<int:id>', methods=['GET'])
 @login_required
 def recibo_cestaticket_html(id):
     """
     Genera una vista HTML del recibo de Cestaticket para impresión en estilo Odoo
+    TODOS LOS MONTOS EN BOLÍVARES (Bs.) - SIN DÓLARES
     """
     try:
         conn = get_db_connection()
         if not conn:
-            return jsonify({'error': 'Error de conexión'}), 500
+            return "<h1>Error de conexión a la base de datos</h1>", 500
         cur = conn.cursor()
         
         cur.execute('''
@@ -1175,7 +1194,7 @@ def recibo_cestaticket_html(id):
         conn.close()
         
         if not row:
-            return jsonify({'error': 'Cestaticket no encontrado'}), 404
+            return "<h1>Recibo no encontrado</h1><p>El ID del recibo no existe.</p>", 404
 
         # Obtener parámetros
         conn = get_db_connection()
@@ -1189,10 +1208,6 @@ def recibo_cestaticket_html(id):
             tasa_row = cur.fetchone()
             tasa_bcv = float(tasa_row[0]) if tasa_row else 755.1552
             
-            cur.execute("SELECT valor FROM parametros WHERE clave = 'cestaticket_usd'")
-            cesta_row = cur.fetchone()
-            valor_mensual_usd = float(cesta_row[0]) if cesta_row else 40.0
-            
             cur.execute("SELECT valor FROM parametros WHERE clave = 'nombre_cuenta_empresa'")
             cuenta_row = cur.fetchone()
             nombre_cuenta = str(cuenta_row[0]) if cuenta_row else "AGROAVICOLA DEL LLANO, C.A"
@@ -1202,7 +1217,6 @@ def recibo_cestaticket_html(id):
         else:
             rif_empresa = "J-505631349"
             tasa_bcv = 755.1552
-            valor_mensual_usd = 40.0
             nombre_cuenta = "AGROAVICOLA DEL LLANO, C.A"
 
         nombres = row[11] or ''
@@ -1215,15 +1229,17 @@ def recibo_cestaticket_html(id):
         fecha_inicio = row[2].strftime("%d/%m/%Y") if row[2] else ''
         fecha_fin = row[3].strftime("%d/%m/%Y") if row[3] else ''
         dias_pagados = row[4] if row[4] else 30
-        valor_diario_usd = float(row[5]) if row[5] else (valor_mensual_usd / 30)
         total_bs = float(row[8]) if row[8] else 0
         lote_id = row[10]
         
+        # Calcular valor diario en Bs
+        valor_diario_usd = float(row[5]) if row[5] else (40.0 / 30)
         valor_diario_bs = valor_diario_usd * tasa_bcv
-        faltas = 30 - dias_pagados
-        descuento_bs = faltas * valor_diario_usd * tasa_bcv
         
-        total_bs_calculado = dias_pagados * valor_diario_usd * tasa_bcv
+        faltas = 30 - dias_pagados
+        descuento_bs = faltas * valor_diario_bs
+        
+        total_bs_calculado = dias_pagados * valor_diario_bs
         if total_bs == 0:
             total_bs = total_bs_calculado
         
@@ -1231,7 +1247,13 @@ def recibo_cestaticket_html(id):
         hora_actual = datetime.now().strftime("%H:%M:%S")
         numero_recibo = f"CESTA-{lote_id}-{cedula}"
 
-        # Generar HTML
+        # Formatear números en Bs
+        total_bs_formateado = f"{total_bs:,.2f}".replace(",", ".")
+        descuento_bs_formateado = f"{descuento_bs:,.2f}".replace(",", ".")
+        valor_diario_bs_formateado = f"{valor_diario_bs:,.2f}".replace(",", ".")
+        tasa_bcv_formateada = f"{tasa_bcv:,.4f}".replace(",", ".")
+
+        # Generar HTML - SOLO EN BOLÍVARES
         html = f'''
         <!DOCTYPE html>
         <html lang="es">
@@ -1363,6 +1385,13 @@ def recibo_cestaticket_html(id):
                     border-top: 2px solid #000;
                     padding-top: 6px;
                 }}
+                .monto-bs {{
+                    font-weight: bold;
+                    color: #1a2a6c;
+                }}
+                .monto-descuento {{
+                    color: #dc3545;
+                }}
                 @media print {{
                     .recibo-container {{
                         padding: 8mm 10mm;
@@ -1378,7 +1407,6 @@ def recibo_cestaticket_html(id):
         </head>
         <body>
             <div class="recibo-container" id="recibo">
-                <!-- Botones de acción - NO se imprimen -->
                 <div class="print-header no-print">
                     <span style="font-weight: bold; font-size: 14px;">📄 Recibo de Cestaticket</span>
                     <div>
@@ -1387,7 +1415,6 @@ def recibo_cestaticket_html(id):
                     </div>
                 </div>
 
-                <!-- HEADER -->
                 <div class="header">
                     <div class="title">AGROAVICOLA DEL LLANO, C.A.</div>
                     <div class="rif">RIF: {rif_empresa}</div>
@@ -1402,7 +1429,6 @@ def recibo_cestaticket_html(id):
 
                 <hr class="separator">
 
-                <!-- EMPLEADO -->
                 <div class="section">
                     <div class="section-title">EMPLEADO</div>
                     <div class="row"><span class="row-label">NOMBRE:</span> <span>{nombre_completo}</span></div>
@@ -1414,7 +1440,6 @@ def recibo_cestaticket_html(id):
 
                 <hr class="separator">
 
-                <!-- DETALLE DEL PAGO -->
                 <div class="section">
                     <div class="section-title">DETALLE DEL PAGO</div>
                     <table class="table">
@@ -1429,14 +1454,14 @@ def recibo_cestaticket_html(id):
                             <tr>
                                 <td>CESTA TICKET SOCIALISTA</td>
                                 <td class="center">{dias_pagados} DÍAS</td>
-                                <td class="right">{total_bs:,.2f}</td>
+                                <td class="right monto-bs">{total_bs_formateado}</td>
                             </tr>
-                            {f'<tr><td>(-) DESCUENTO POR FALTAS</td><td class="center">{faltas} DÍAS</td><td class="right" style="color:red;">({descuento_bs:,.2f})</td></tr>' if faltas > 0 else ''}
+                            {f'<tr><td>(-) DESCUENTO POR FALTAS</td><td class="center">{faltas} DÍAS</td><td class="right monto-descuento">({descuento_bs_formateado})</td></tr>' if faltas > 0 else ''}
                         </tbody>
                         <tfoot>
                             <tr class="total-row">
                                 <td colspan="2" style="text-align:right;">TOTAL A PAGAR:</td>
-                                <td class="right">{total_bs:,.2f}</td>
+                                <td class="right monto-bs">{total_bs_formateado}</td>
                             </tr>
                         </tfoot>
                     </table>
@@ -1444,17 +1469,13 @@ def recibo_cestaticket_html(id):
 
                 <hr class="separator">
 
-                <!-- VALORES DE REFERENCIA -->
                 <div class="valores">
-                    <div class="row"><span class="row-label">VALOR MENSUAL (USD):</span> <span>${valor_mensual_usd:.2f}</span></div>
-                    <div class="row"><span class="row-label">VALOR POR DÍA (USD):</span> <span>${valor_diario_usd:.4f}</span></div>
-                    <div class="row"><span class="row-label">VALOR POR DÍA (Bs.):</span> <span>Bs. {valor_diario_bs:,.2f}</span></div>
-                    <div class="row"><span class="row-label">TASA BCV:</span> <span>Bs. {tasa_bcv:,.4f}</span></div>
+                    <div class="row"><span class="row-label">VALOR POR DÍA (Bs.):</span> <span>{valor_diario_bs_formateado}</span></div>
+                    <div class="row"><span class="row-label">TASA BCV:</span> <span>{tasa_bcv_formateada}</span></div>
                 </div>
 
                 <hr class="separator">
 
-                <!-- DECLARACIÓN Y FIRMAS -->
                 <div class="declaracion">
                     <div style="font-weight:bold; margin-bottom:4px;">DECLARACIÓN Y FIRMAS</div>
                     <p>Declaro que he recibido el total indicado y recibo de conformidad
@@ -1484,19 +1505,15 @@ def recibo_cestaticket_html(id):
                     Fecha: {fecha_actual}
                 </div>
 
-                <!-- FOOTER -->
                 <div class="footer">
                     FIN DEL RECIBO &nbsp;|&nbsp; LOTE: {lote_id} - ID: {id}
                 </div>
             </div>
 
             <script>
-                // Función para imprimir el recibo
                 function imprimirRecibo() {{
                     window.print();
                 }}
-
-                // Si se presiona Ctrl+P o Cmd+P, redirigir a nuestra función
                 document.addEventListener('keydown', function(e) {{
                     if ((e.ctrlKey || e.metaKey) && e.key === 'p') {{
                         e.preventDefault();
@@ -1524,7 +1541,7 @@ def recibo_cestaticket_html(id):
 def generar_recibo_cestaticket_matriz(id):
     """
     Genera un recibo de pago de Cestaticket en formato TXT para impresión en matriz de punto
-    Formato de media página (80 columnas) - Estilo Odoo
+    TODOS LOS MONTOS EN BOLÍVARES (Bs.) - SIN DÓLARES
     """
     try:
         conn = get_db_connection()
@@ -1605,9 +1622,9 @@ def generar_recibo_cestaticket_matriz(id):
         
         valor_diario_bs = valor_diario_usd * tasa_bcv
         faltas = 30 - dias_pagados
-        descuento_bs = faltas * valor_diario_usd * tasa_bcv
+        descuento_bs = faltas * valor_diario_bs
         
-        total_bs_calculado = dias_pagados * valor_diario_usd * tasa_bcv
+        total_bs_calculado = dias_pagados * valor_diario_bs
         if total_bs == 0:
             total_bs = total_bs_calculado
         
@@ -1615,11 +1632,15 @@ def generar_recibo_cestaticket_matriz(id):
         hora_actual = datetime.now().strftime("%H:%M:%S")
         numero_recibo = f"CESTA-{lote_id}-{cedula}"
         
+        # Formatear números en Bs
+        total_bs_str = f"{total_bs:,.2f}".replace(",", ".")
+        descuento_bs_str = f"{descuento_bs:,.2f}".replace(",", ".")
+        valor_diario_bs_str = f"{valor_diario_bs:,.2f}".replace(",", ".")
+        tasa_bcv_str = f"{tasa_bcv:,.4f}".replace(",", ".")
+        
         buffer = StringIO()
         
-        # ============================================
-        # HEADER - ESTILO ODOO
-        # ============================================
+        # HEADER
         buffer.write("=" * 80 + "\n")
         buffer.write("\n")
         buffer.write(" " * 20 + "AGROAVICOLA DEL LLANO, C.A." + "\n")
@@ -1634,9 +1655,7 @@ def generar_recibo_cestaticket_matriz(id):
         buffer.write(" " * 20 + "PAGO DE CESTATICKET SOCIALISTA" + "\n")
         buffer.write("\n")
         
-        # ============================================
         # DATOS DEL EMPLEADO
-        # ============================================
         buffer.write("-" * 80 + "\n")
         buffer.write(" " * 0 + "EMPLEADO:" + "\n")
         buffer.write("-" * 80 + "\n")
@@ -1645,39 +1664,31 @@ def generar_recibo_cestaticket_matriz(id):
         buffer.write(" " * 0 + "PERIODO: " + fecha_inicio + " al " + fecha_fin + "\n")
         buffer.write("-" * 80 + "\n")
         
-        # ============================================
         # DETALLE DEL PAGO
-        # ============================================
         buffer.write("\n")
         buffer.write(" " * 0 + "DETALLE DEL PAGO" + "\n")
         buffer.write("-" * 80 + "\n")
         buffer.write(" " * 0 + "CONCEPTO" + " " * 40 + "CANTIDAD" + " " * 15 + "MONTO Bs." + "\n")
         buffer.write("-" * 80 + "\n")
         
-        buffer.write(" " * 0 + "CESTA TICKET SOCIALISTA" + " " * 22 + f"{dias_pagados:>8} DÍAS" + " " * 5 + f"{total_bs:>14,.2f}".replace(",", ".") + "\n")
+        buffer.write(" " * 0 + "CESTA TICKET SOCIALISTA" + " " * 22 + f"{dias_pagados:>8} DÍAS" + " " * 5 + f"{total_bs_str:>14}" + "\n")
         
         if faltas > 0:
-            buffer.write(" " * 0 + "(-) DESCUENTO POR FALTAS" + " " * 17 + f"{faltas:>8} DÍAS" + " " * 5 + f"({descuento_bs:>13,.2f})".replace(",", ".") + "\n")
+            buffer.write(" " * 0 + "(-) DESCUENTO POR FALTAS" + " " * 17 + f"{faltas:>8} DÍAS" + " " * 5 + f"({descuento_bs_str:>13})" + "\n")
         
         buffer.write("-" * 80 + "\n")
-        buffer.write(" " * 0 + " " * 56 + "TOTAL A PAGAR: " + f"{total_bs:>14,.2f}".replace(",", ".") + "\n")
+        buffer.write(" " * 0 + " " * 56 + "TOTAL A PAGAR: " + f"{total_bs_str:>14}" + "\n")
         buffer.write("=" * 80 + "\n")
         
-        # ============================================
         # VALORES DE REFERENCIA
-        # ============================================
         buffer.write("\n")
         buffer.write(" " * 0 + "VALORES DE REFERENCIA" + "\n")
         buffer.write("-" * 80 + "\n")
-        buffer.write(" " * 0 + "VALOR MENSUAL (USD): " + f"${valor_mensual_usd:>8,.2f}".replace(",", ".") + "\n")
-        buffer.write(" " * 0 + "VALOR POR DÍA (USD): " + f"${valor_diario_usd:>8,.4f}".replace(",", ".") + "\n")
-        buffer.write(" " * 0 + "VALOR POR DÍA (Bs.): " + f"Bs. {valor_diario_bs:>8,.2f}".replace(",", ".") + "\n")
-        buffer.write(" " * 0 + "TASA BCV: " + f"Bs. {tasa_bcv:>12,.4f}".replace(",", ".") + "\n")
+        buffer.write(" " * 0 + "VALOR POR DÍA (Bs.): " + f"{valor_diario_bs_str:>14}" + "\n")
+        buffer.write(" " * 0 + "TASA BCV: " + f"{tasa_bcv_str:>14}" + "\n")
         buffer.write("-" * 80 + "\n")
         
-        # ============================================
         # DECLARACIÓN Y FIRMAS
-        # ============================================
         buffer.write("\n")
         buffer.write("DECLARACIÓN Y FIRMAS" + "\n")
         buffer.write("-" * 80 + "\n")
