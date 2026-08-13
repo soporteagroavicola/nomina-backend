@@ -1137,6 +1137,7 @@ def generar_recibo_cestaticket(id):
 def recibo_cestaticket_html(id):
     """
     Genera una vista HTML del recibo de Cestaticket para impresión en estilo Odoo
+    TODOS LOS MONTOS EN BOLÍVARES (Bs.) - SIN DÓLARES
     """
     try:
         conn = get_db_connection()
@@ -1186,10 +1187,6 @@ def recibo_cestaticket_html(id):
             tasa_row = cur.fetchone()
             tasa_bcv = float(tasa_row[0]) if tasa_row else 755.1552
             
-            cur.execute("SELECT valor FROM parametros WHERE clave = 'cestaticket_usd'")
-            cesta_row = cur.fetchone()
-            valor_mensual_usd = float(cesta_row[0]) if cesta_row else 40.0
-            
             cur.execute("SELECT valor FROM parametros WHERE clave = 'nombre_cuenta_empresa'")
             cuenta_row = cur.fetchone()
             nombre_cuenta = str(cuenta_row[0]) if cuenta_row else "AGROAVICOLA DEL LLANO, C.A"
@@ -1199,7 +1196,6 @@ def recibo_cestaticket_html(id):
         else:
             rif_empresa = "J-505631349"
             tasa_bcv = 755.1552
-            valor_mensual_usd = 40.0
             nombre_cuenta = "AGROAVICOLA DEL LLANO, C.A"
 
         nombres = row[11] or ''
@@ -1212,15 +1208,17 @@ def recibo_cestaticket_html(id):
         fecha_inicio = row[2].strftime("%d/%m/%Y") if row[2] else ''
         fecha_fin = row[3].strftime("%d/%m/%Y") if row[3] else ''
         dias_pagados = row[4] if row[4] else 30
-        valor_diario_usd = float(row[5]) if row[5] else (valor_mensual_usd / 30)
         total_bs = float(row[8]) if row[8] else 0
         lote_id = row[10]
         
+        # Calcular valor diario en Bs
+        valor_diario_usd = float(row[5]) if row[5] else (40.0 / 30)
         valor_diario_bs = valor_diario_usd * tasa_bcv
-        faltas = 30 - dias_pagados
-        descuento_bs = faltas * valor_diario_usd * tasa_bcv
         
-        total_bs_calculado = dias_pagados * valor_diario_usd * tasa_bcv
+        faltas = 30 - dias_pagados
+        descuento_bs = faltas * valor_diario_bs
+        
+        total_bs_calculado = dias_pagados * valor_diario_bs
         if total_bs == 0:
             total_bs = total_bs_calculado
         
@@ -1228,7 +1226,13 @@ def recibo_cestaticket_html(id):
         hora_actual = datetime.now().strftime("%H:%M:%S")
         numero_recibo = f"CESTA-{lote_id}-{cedula}"
 
-        # Generar HTML (mismo que antes, pero asegurando que no sea JSON)
+        # Formatear números en Bs
+        total_bs_formateado = f"{total_bs:,.2f}".replace(",", ".")
+        descuento_bs_formateado = f"{descuento_bs:,.2f}".replace(",", ".")
+        valor_diario_bs_formateado = f"{valor_diario_bs:,.2f}".replace(",", ".")
+        tasa_bcv_formateada = f"{tasa_bcv:,.4f}".replace(",", ".")
+
+        # Generar HTML - SOLO EN BOLÍVARES
         html = f'''
         <!DOCTYPE html>
         <html lang="es">
@@ -1360,6 +1364,13 @@ def recibo_cestaticket_html(id):
                     border-top: 2px solid #000;
                     padding-top: 6px;
                 }}
+                .monto-bs {{
+                    font-weight: bold;
+                    color: #1a2a6c;
+                }}
+                .monto-descuento {{
+                    color: #dc3545;
+                }}
                 @media print {{
                     .recibo-container {{
                         padding: 8mm 10mm;
@@ -1422,14 +1433,14 @@ def recibo_cestaticket_html(id):
                             <tr>
                                 <td>CESTA TICKET SOCIALISTA</td>
                                 <td class="center">{dias_pagados} DÍAS</td>
-                                <td class="right">{total_bs:,.2f}</td>
+                                <td class="right monto-bs">{total_bs_formateado}</td>
                             </tr>
-                            {f'<tr><td>(-) DESCUENTO POR FALTAS</td><td class="center">{faltas} DÍAS</td><td class="right" style="color:red;">({descuento_bs:,.2f})</td></tr>' if faltas > 0 else ''}
+                            {f'<tr><td>(-) DESCUENTO POR FALTAS</td><td class="center">{faltas} DÍAS</td><td class="right monto-descuento">({descuento_bs_formateado})</td></tr>' if faltas > 0 else ''}
                         </tbody>
                         <tfoot>
                             <tr class="total-row">
                                 <td colspan="2" style="text-align:right;">TOTAL A PAGAR:</td>
-                                <td class="right">{total_bs:,.2f}</td>
+                                <td class="right monto-bs">{total_bs_formateado}</td>
                             </tr>
                         </tfoot>
                     </table>
@@ -1438,10 +1449,8 @@ def recibo_cestaticket_html(id):
                 <hr class="separator">
 
                 <div class="valores">
-                    <div class="row"><span class="row-label">VALOR MENSUAL (USD):</span> <span>${valor_mensual_usd:.2f}</span></div>
-                    <div class="row"><span class="row-label">VALOR POR DÍA (USD):</span> <span>${valor_diario_usd:.4f}</span></div>
-                    <div class="row"><span class="row-label">VALOR POR DÍA (Bs.):</span> <span>Bs. {valor_diario_bs:,.2f}</span></div>
-                    <div class="row"><span class="row-label">TASA BCV:</span> <span>Bs. {tasa_bcv:,.4f}</span></div>
+                    <div class="row"><span class="row-label">VALOR POR DÍA (Bs.):</span> <span>{valor_diario_bs_formateado}</span></div>
+                    <div class="row"><span class="row-label">TASA BCV:</span> <span>{tasa_bcv_formateada}</span></div>
                 </div>
 
                 <hr class="separator">
