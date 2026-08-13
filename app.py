@@ -18,12 +18,14 @@ app = Flask(__name__)
 app.config.update(
     SECRET_KEY=os.getenv('SECRET_KEY', 'clave_super_secreta_para_nomina_2026'),
     SESSION_COOKIE_HTTPONLY=True,
-    SESSION_COOKIE_SAMESITE='None',  # <--- Esta línea ya la tienes
-    SESSION_COOKIE_SECURE=True,      # <--- Esta línea ya la tienes
+    SESSION_COOKIE_SAMESITE='None',
+    SESSION_COOKIE_SECURE=True,
     PERMANENT_SESSION_LIFETIME=timedelta(hours=8),
-    SESSION_COOKIE_NAME='nomina_session'
+    SESSION_COOKIE_NAME='nomina_session',
+    # Estas 2 líneas son las claves para Render:
+    SESSION_COOKIE_DOMAIN=False,
+    SESSION_COOKIE_PATH='/'
 )
-
 # ✅ AGREGA ESTA NUEVA LÍNEA DEBAJO DE LA CONFIGURACIÓN:
 app.config['SESSION_COOKIE_DOMAIN'] = False
 
