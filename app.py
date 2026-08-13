@@ -21,13 +21,8 @@ app.config.update(
     SESSION_COOKIE_SAMESITE='None',
     SESSION_COOKIE_SECURE=True,
     PERMANENT_SESSION_LIFETIME=timedelta(hours=8),
-    SESSION_COOKIE_NAME='nomina_session',
-    # CAMBIO CLAVE: Forzamos que la cookie se aplique a cualquier subdominio y ruta
-    SESSION_COOKIE_DOMAIN=False,
-    SESSION_COOKIE_PATH='/'
+    SESSION_COOKIE_NAME='nomina_session'
 )
-# ✅ AGREGA ESTA NUEVA LÍNEA DEBAJO DE LA CONFIGURACIÓN:
-app.config['SESSION_COOKIE_DOMAIN'] = False
 
 frontend_urls = [
     "https://nomina-frontend.onrender.com",
@@ -42,8 +37,9 @@ CORS(app,
      origins=frontend_urls, 
      supports_credentials=True, 
      allow_headers=["Content-Type", "Authorization"],
-     # 🔥 ELIMINA ESTA LÍNEA: expose_headers=["Content-Type", "Authorization"],
+     expose_headers=["Content-Type", "Authorization"],
      methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"])
+
 def get_db_connection():
     database_url = os.getenv('DATABASE_URL', 'postgresql://nomina_db_naiu_user:58sgnjVGnVRtLVbOVqYiA7d41VXwsHUH@dpg-d9prbrr9ik0c73ci4e0g-a.oregon-postgres.render.com/nomina_db_naiu')
     try:
@@ -186,15 +182,10 @@ def login():
     user = cur.fetchone()
     cur.close(); conn.close()
     if user and check_password_hash(user[1], password):
-        session.clear()  # Limpiamos cualquier sesión anterior
         session['user_id'] = user[0]
         session['username'] = username
         session.permanent = True
-        
-        # 🔥 CAMBIO CRUCIAL: Forzamos a Flask a escribir la sesión en la respuesta AHORA MISMO
-        response = jsonify({'mensaje': 'Inicio de sesión exitoso', 'username': username})
-        response.headers.add('Set-Cookie', app.session_interface.get_cookie_domain(app))
-        return response
+        return jsonify({'mensaje': 'Inicio de sesión exitoso', 'username': username})
     return jsonify({'error': 'Usuario o contraseña incorrectos'}), 401
 
 @app.route('/api/logout', methods=['POST'])
@@ -342,6 +333,9 @@ def get_empleados():
 @app.route('/api/empleados_con_sucursal', methods=['GET'])
 @login_required
 def get_empleados_con_sucursal():
+    """
+    Obtiene empleados con información de sucursal para filtrado
+    """
     search = request.args.get('search', '')
     sucursal_id = request.args.get('sucursal_id', '')
     tipo_pago = request.args.get('tipo_pago', '')
@@ -851,9 +845,6 @@ def get_lotes_cestaticket():
         'tasa_bcv': float(r[5]) if r[5] else 0, 'total_empleados_detalle': r[6]
     } for r in rows])
 
-# ============================================
-# ✅ RUTA ÚNICA Y CORREGIDA PARA DETALLE DEL LOTE
-# ============================================
 @app.route('/api/lotes/<int:id>', methods=['GET'])
 @login_required
 def get_lote_detalle(id):
@@ -2262,7 +2253,7 @@ def generar_lote_pdf(lote_id):
         return jsonify({'error': f'Error interno generando el PDF del lote: {str(e)}'}), 500
 
 # ============================================
-# GENERADOR DE RECIBO DE NÓMINA (PDF)
+# GENERADOR DE RECIBO DE NÓMINA
 # ============================================
 @app.route('/api/generar_recibo/<int:id_nomina>', methods=['GET'])
 @login_required
@@ -2413,157 +2404,6 @@ def generar_recibo_pdf(id_nomina):
         return jsonify({'error': str(e)}), 500
 
 # ============================================
-# ✅ NUEVA RUTA AGREGADA: GENERADOR DE RECIBO HTML (CORRIGE EL 404 Y MUESTRA USD Y BS)
-# ============================================
-@app.route('/api/recibo_nomina_html/<int:id_nomina>', methods=['GET', 'OPTIONS'])
-@login_required
-def recibo_nomina_html(id_nomina):
-    # Manejo obligatorio de OPTIONS para evitar error 404 en el fetch del navegador
-    if request.method == 'OPTIONS':
-        return '', 200
-
-    try:
-        conn = get_db_connection()
-        if not conn:
-            return "<h1>Error de conexión a la base de datos</h1>", 500
-        cur = conn.cursor()
-        cur.execute('''
-            SELECT 
-                n.id_nomina, n.id_empleado, n.fecha_inicio, n.fecha_fin, n.tipo, n.faltas_dias, 
-                n.salario_base_usd, n.horas_extras_usd, n.bono_complementario_usd, n.total_asignaciones_usd, 
-                n.total_deducciones_usd, n.neto_pagar_usd, n.neto_pagar_bs, n.tasa_bcv, n.fecha_calculo, 
-                n.sso_usd, n.rpe_usd, n.faov_usd, n.sso_bs, n.rpe_bs, n.faov_bs, 
-                n.descripcion, n.lote_id,
-                e.nombres, e.apellidos, e.cedula, e.cargo
-            FROM nominas n
-            JOIN empleados e ON n.id_empleado = e.id_empleado
-            WHERE n.id_nomina = %s
-        ''', (id_nomina,))
-        
-        row = cur.fetchone()
-        cur.close(); conn.close()
-        if not row:
-            return "<h1>Nómina no encontrada</h1><p>El ID de nómina no existe.</p>", 404
-
-        n = row 
-        nombres = n[23] if n[23] else ''
-        apellidos = n[24] if n[24] else ''
-        empleado_nombre = f"{nombres} {apellidos}".strip()
-        cedula = n[25] if n[25] else ''
-        cargo = n[26] if n[26] else ''
-        
-        fecha_inicio = n[2].strftime("%d/%m/%Y") if n[2] else ''
-        fecha_fin = n[3].strftime("%d/%m/%Y") if n[3] else ''
-        tipo = n[4] or 'Quincenal'
-        salario_base_usd = float(n[6]) if n[6] else 0
-        horas_extras_usd = float(n[7]) if n[7] else 0
-        bono_complementario_usd = float(n[8]) if n[8] else 0
-        total_asignaciones_usd = float(n[9]) if n[9] else 0
-        total_deducciones_usd = float(n[10]) if n[10] else 0
-        neto_usd = float(n[11]) if n[11] else 0
-        neto_bs = float(n[12]) if n[12] else 0
-        sso_usd = float(n[15]) if n[15] else 0
-        rpe_usd = float(n[16]) if n[16] else 0
-        faov_usd = float(n[17]) if n[17] else 0
-        tasa_bcv = float(n[13]) if n[13] else 0
-        descripcion = n[21] or "Recibo de Nómina"
-
-        # Cálculo en Bs. para mostrar en el recibo HTML
-        salario_base_bs = salario_base_usd * tasa_bcv
-        horas_extras_bs = horas_extras_usd * tasa_bcv
-        bono_complementario_bs = bono_complementario_usd * tasa_bcv
-        total_asignaciones_bs = total_asignaciones_usd * tasa_bcv
-        total_deducciones_bs = total_deducciones_usd * tasa_bcv
-        sso_bs = sso_usd * tasa_bcv
-        rpe_bs = rpe_usd * tasa_bcv
-        faov_bs = faov_usd * tasa_bcv
-
-        html_content = f"""
-        <!DOCTYPE html>
-        <html>
-        <head>
-            <meta charset="UTF-8">
-            <meta name="viewport" content="width=device-width, initial-scale=1.0">
-            <title>Recibo de Nómina</title>
-            <style>
-                body {{ font-family: 'Segoe UI', Arial, sans-serif; background: #f3f4f6; margin: 0; padding: 20px; }}
-                .container {{ max-width: 900px; margin: 0 auto; padding: 30px; border: 1px solid #e2e8f0; border-radius: 8px; background: white; box-shadow: 0 4px 6px rgba(0,0,0,0.1); }}
-                .header {{ text-align: center; margin-bottom: 25px; border-bottom: 2px solid #1e3a8a; padding-bottom: 15px; }}
-                .header h2 {{ color: #1e3a8a; margin: 0; }}
-                .info-box {{ display: flex; justify-content: space-between; margin-bottom: 20px; background: #f8fafc; padding: 15px; border-radius: 6px; }}
-                table {{ width: 100%; border-collapse: collapse; margin-bottom: 20px; font-size: 14px; }}
-                th {{ padding: 12px; text-align: left; background-color: #f1f5f9; border-bottom: 2px solid #cbd5e1; }}
-                td {{ padding: 10px; border-bottom: 1px solid #e2e8f0; }}
-                .text-right {{ text-align: right; }}
-                .text-green {{ color: #16a34a; }}
-                .text-red {{ color: #dc2626; }}
-                .text-primary {{ color: #1e3a8a; }}
-                .total-row {{ border-top: 2px solid #1e3a8a; font-weight: bold; background-color: #f8fafc; }}
-                .footer {{ text-align: center; font-size: 12px; color: #94a3b8; border-top: 1px solid #e2e8f0; padding-top: 15px; margin-top: 10px; }}
-            </style>
-        </head>
-        <body>
-            <div class="container">
-                <div class="header">
-                    <h2>Nómina Agroavícola del Llano</h2>
-                    <p>Recibo de Pago Semanal</p>
-                </div>
-                
-                <div class="info-box">
-                    <div>
-                        <strong>Empleado:</strong> {empleado_nombre}<br>
-                        <strong>Cédula:</strong> {cedula}
-                    </div>
-                    <div style="text-align: right;">
-                        <strong>Cargo:</strong> {cargo}<br>
-                        <strong>Período:</strong> {fecha_inicio} al {fecha_fin}<br>
-                        <strong>Tasa BCV:</strong> Bs. {tasa_bcv:.4f}
-                    </div>
-                </div>
-
-                <table>
-                    <thead>
-                        <tr>
-                            <th>Concepto</th>
-                            <th class="text-right">Monto (USD)</th>
-                            <th class="text-right">Monto (Bs.)</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        <tr><td>Salario Base del Período</td><td class="text-right">${salario_base_usd:,.2f}</td><td class="text-right">Bs. {salario_base_bs:,.2f}</td></tr>
-                        <tr><td>Horas Extras</td><td class="text-right">${horas_extras_usd:,.2f}</td><td class="text-right">Bs. {horas_extras_bs:,.2f}</td></tr>
-                        <tr><td>Bono Complementario (Exento)</td><td class="text-right">${bono_complementario_usd:,.2f}</td><td class="text-right">Bs. {bono_complementario_bs:,.2f}</td></tr>
-                        <tr class="text-green"><td>Total Asignaciones</td><td class="text-right">${total_asignaciones_usd:,.2f}</td><td class="text-right">Bs. {total_asignaciones_bs:,.2f}</td></tr>
-                        
-                        <tr class="text-red"><td>Seguro Social (SSO)</td><td class="text-right">-${sso_usd:,.2f}</td><td class="text-right">-Bs. {sso_bs:,.2f}</td></tr>
-                        <tr class="text-red"><td>Régimen Prestacional (RPE)</td><td class="text-right">-${rpe_usd:,.2f}</td><td class="text-right">-Bs. {rpe_bs:,.2f}</td></tr>
-                        <tr class="text-red"><td>Fondo Ahorro (FAOV)</td><td class="text-right">-${faov_usd:,.2f}</td><td class="text-right">-Bs. {faov_bs:,.2f}</td></tr>
-                        <tr class="text-red"><td>Total Deducciones</td><td class="text-right">-${total_deducciones_usd:,.2f}</td><td class="text-right">-Bs. {total_deducciones_bs:,.2f}</td></tr>
-                    </tbody>
-                    <tfoot>
-                        <tr class="total-row">
-                            <td>NETO A PAGAR</td>
-                            <td class="text-right text-primary">${neto_usd:,.2f}</td>
-                            <td class="text-right text-primary">Bs. {neto_bs:,.2f}</td>
-                        </tr>
-                    </tfoot>
-                </table>
-                
-                <div class="footer">
-                    <p>Este recibo es generado automáticamente por el sistema de nómina.</p>
-                    <p>Lote #{n[22]} - ID Nómina: {id_nomina} | Generado: {datetime.now().strftime('%d/%m/%Y %H:%M')}</p>
-                </div>
-            </div>
-        </body>
-        </html>
-        """
-        return html_content, 200, {'Content-Type': 'text/html'}
-        
-    except Exception as e:
-        print(f"❌ Error generando recibo HTML: {e}")
-        return f"<h1>Error al generar el recibo</h1><p>{str(e)}</p>", 500
-
-# ============================================
 # ELIMINAR LOTE DE NÓMINA
 # ============================================
 @app.route('/api/lotes/<int:id>', methods=['DELETE'])
@@ -2589,13 +2429,12 @@ def eliminar_lote(id):
 @app.route('/api/lotes', methods=['GET'])
 @login_required
 def get_lotes():
-    print(f"🔍 GET /api/lotes - Session user ID: {session.get('user_id')}")
+    print(f"🔍 GET /api/lotes - Session user: {session.get('user_id')}")
     search = request.args.get('search', '')
     conn = get_db_connection()
     if not conn:
-        print("❌ Error de conexión a BD en /api/lotes")
+        print("❌ Error de conexión a BD")
         return jsonify([])
-    
     cur = conn.cursor()
     query = '''
         SELECT 
@@ -2603,7 +2442,7 @@ def get_lotes():
             l.total_usd, l.total_bs, l.cantidad_empleados,
             STRING_AGG(DISTINCT s.nombre, ', ') as sucursales
         FROM lotes_nomina l
-        LEFT JOIN nominas n ON l.lote_id = n.lote_id
+        LEFT JOIN nominas n ON l.id_lote = n.lote_id
         LEFT JOIN empleados e ON n.id_empleado = e.id_empleado
         LEFT JOIN sucursales s ON e.sucursal_id = s.id_sucursal
         WHERE 1=1
@@ -2618,9 +2457,9 @@ def get_lotes():
     try:
         cur.execute(query, params)
         rows = cur.fetchall()
-        print(f"✅ Lotes encontrados en BD: {len(rows)}")
+        print(f"✅ Lotes encontrados: {len(rows)}")
     except Exception as e:
-        print(f"❌ Error en query de /api/lotes: {e}")
+        print(f"❌ Error en query: {e}")
         cur.close(); conn.close()
         return jsonify([])
     
@@ -2635,6 +2474,76 @@ def get_lotes():
         'cantidad_empleados_lote': r[5] if r[5] else 0,
         'sucursales_involucradas': r[6] or 'Sin sucursal'
     } for r in rows])
+
+@app.route('/api/lotes/<int:id>', methods=['GET'])
+@login_required
+def get_lote_detalle(id):
+    try:
+        conn = get_db_connection()
+        if not conn: return jsonify({'error': 'Error de conexión'}), 500
+        cur = conn.cursor()
+        cur.execute("SELECT * FROM lotes_nomina WHERE id_lote = %s", (id,))
+        lote_row = cur.fetchone()
+        if not lote_row: return jsonify({'error': 'Lote no encontrado'}), 404
+        
+        cur.execute('''
+            SELECT 
+                n.id_nomina, n.id_empleado, n.fecha_inicio, n.fecha_fin, 
+                n.tipo, n.faltas_dias, n.salario_base_usd, 
+                n.horas_extras_usd, n.bono_complementario_usd, 
+                n.total_asignaciones_usd, n.total_deducciones_usd, 
+                n.neto_pagar_usd, n.neto_pagar_bs, 
+                n.sso_usd, n.rpe_usd, n.faov_usd,
+                n.sso_bs, n.rpe_bs, n.faov_bs,
+                e.nombres, e.apellidos, e.cedula
+            FROM nominas n
+            JOIN empleados e ON n.id_empleado = e.id_empleado
+            WHERE n.lote_id = %s
+            ORDER BY e.nombres
+        ''', (id,))
+        nominas_rows = cur.fetchall()
+        cur.close(); conn.close()
+
+        nominas = []
+        for n in nominas_rows:
+            nominas.append({
+                'id_nomina': n[0],
+                'id_empleado': n[1],
+                'fecha_inicio': n[2].isoformat() if n[2] else None,
+                'fecha_fin': n[3].isoformat() if n[3] else None,
+                'tipo': n[4],
+                'faltas_dias': n[5],
+                'salario_base_usd': float(n[6]) if n[6] else 0,
+                'horas_extras_usd': float(n[7]) if n[7] else 0,
+                'bono_complementario_usd': float(n[8]) if n[8] else 0,
+                'total_asignaciones_usd': float(n[9]) if n[9] else 0,
+                'total_deducciones_usd': float(n[10]) if n[10] else 0,
+                'neto_pagar_usd': float(n[11]) if n[11] else 0,
+                'neto_pagar_bs': float(n[12]) if n[12] else 0,
+                'sso_usd': float(n[13]) if n[13] else 0,
+                'rpe_usd': float(n[14]) if n[14] else 0,
+                'faov_usd': float(n[15]) if n[15] else 0,
+                'sso_bs': float(n[16]) if n[16] else 0,
+                'rpe_bs': float(n[17]) if n[17] else 0,
+                'faov_bs': float(n[18]) if n[18] else 0,
+                'nombres': n[19],
+                'apellidos': n[20],
+                'cedula': n[21]
+            })
+
+        return jsonify({
+            'id_lote': lote_row[0],
+            'descripcion': lote_row[1],
+            'fecha_calculo': lote_row[2].isoformat() if lote_row[2] else None,
+            'total_usd': float(lote_row[3]) if lote_row[3] else 0,
+            'total_bs': float(lote_row[4]) if lote_row[4] else 0,
+            'cantidad_empleados': lote_row[5] if lote_row[5] else 0,
+            'nominas': nominas
+        })
+    except Exception as e:
+        print(f"❌ Error crítico en get_lote_detalle: {e}")
+        return jsonify({'error': f'Error interno del servidor: {str(e)}'}), 500
+
 # ============================================
 # GENERADOR DE ARCHIVO DE PAGO (TXT)
 # ============================================
