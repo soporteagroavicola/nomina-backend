@@ -1534,6 +1534,448 @@ def recibo_cestaticket_html(id):
         return f"<h1>Error al generar el recibo</h1><p>{str(e)}</p>", 500
 
 # ============================================
+# 🆕 NUEVO ENDPOINT: RECIBO DE NÓMINA EN HTML (ESTILO ODOO)
+# ============================================
+@app.route('/api/recibo_nomina_html/<int:id_nomina>', methods=['GET'])
+@login_required
+def recibo_nomina_html(id_nomina):
+    """
+    Genera una vista HTML del recibo de Nómina para impresión en estilo Odoo
+    TODOS LOS MONTOS EN BOLÍVARES (Bs.) - CON DÓLARES COMO REFERENCIA
+    """
+    try:
+        conn = get_db_connection()
+        if not conn:
+            return "<h1>Error de conexión a la base de datos</h1>", 500
+        cur = conn.cursor()
+
+        cur.execute('''
+            SELECT 
+                n.id_nomina,
+                n.id_empleado,
+                n.fecha_inicio,
+                n.fecha_fin,
+                n.tipo,
+                n.faltas_dias,
+                n.salario_base_usd,
+                n.horas_extras_usd,
+                n.bono_complementario_usd,
+                n.total_asignaciones_usd,
+                n.total_deducciones_usd,
+                n.neto_pagar_usd,
+                n.neto_pagar_bs,
+                n.tasa_bcv,
+                n.fecha_calculo,
+                n.sso_usd,
+                n.rpe_usd,
+                n.faov_usd,
+                n.sso_bs,
+                n.rpe_bs,
+                n.faov_bs,
+                n.descripcion,
+                n.lote_id,
+                e.nombres,
+                e.apellidos,
+                e.cedula,
+                e.cargo,
+                e.salario_mensual_usd,
+                e.fecha_ingreso
+            FROM nominas n
+            JOIN empleados e ON n.id_empleado = e.id_empleado
+            WHERE n.id_nomina = %s
+        ''', (id_nomina,))
+
+        row = cur.fetchone()
+        cur.close()
+        conn.close()
+
+        if not row:
+            return "<h1>Recibo no encontrado</h1><p>El ID de la nómina no existe.</p>", 404
+
+        # Obtener parámetros de la empresa
+        conn = get_db_connection()
+        rif_empresa = "J-505631349"
+        nombre_cuenta = "AGROAVICOLA DEL LLANO, C.A"
+        if conn:
+            cur = conn.cursor()
+            cur.execute("SELECT valor FROM parametros WHERE clave = 'rif_empresa'")
+            rif_row = cur.fetchone()
+            if rif_row:
+                rif_empresa = str(rif_row[0])
+            cur.execute("SELECT valor FROM parametros WHERE clave = 'nombre_cuenta_empresa'")
+            cuenta_row = cur.fetchone()
+            if cuenta_row:
+                nombre_cuenta = str(cuenta_row[0])
+            cur.close()
+            conn.close()
+
+        # Desempaquetar datos
+        (id_nomina, id_empleado, fecha_inicio, fecha_fin, tipo, faltas_dias,
+         salario_base_usd, horas_extras_usd, bono_complementario_usd,
+         total_asignaciones_usd, total_deducciones_usd, neto_pagar_usd,
+         neto_pagar_bs, tasa_bcv, fecha_calculo, sso_usd, rpe_usd, faov_usd,
+         sso_bs, rpe_bs, faov_bs, descripcion, lote_id,
+         nombres, apellidos, cedula, cargo, salario_mensual_usd, fecha_ingreso) = row
+
+        nombre_completo = f"{nombres} {apellidos}".strip()
+        fecha_ingreso_str = fecha_ingreso.strftime("%d/%m/%Y") if fecha_ingreso else ''
+        fecha_inicio_str = fecha_inicio.strftime("%d/%m/%Y") if fecha_inicio else ''
+        fecha_fin_str = fecha_fin.strftime("%d/%m/%Y") if fecha_fin else ''
+        fecha_calculo_str = fecha_calculo.strftime("%d/%m/%Y") if fecha_calculo else datetime.now().strftime("%d/%m/%Y")
+
+        # Convertir a Bs
+        salario_base_bs = salario_base_usd * tasa_bcv
+        horas_extras_bs = horas_extras_usd * tasa_bcv
+        bono_comp_bs = bono_complementario_usd * tasa_bcv
+        total_asignaciones_bs = total_asignaciones_usd * tasa_bcv
+        total_deducciones_bs = total_deducciones_usd * tasa_bcv
+        neto_bs = neto_pagar_bs
+        salario_mensual_bs = salario_mensual_usd * tasa_bcv
+
+        # Calcular pago 60/40 (para mostrar si aplica)
+        neto_base_bs = neto_bs - bono_comp_bs
+        pago_60_bs = (neto_base_bs * 0.60) + bono_comp_bs if neto_pagar_usd > 0 else 0
+        pago_40_bs = neto_base_bs * 0.40 if neto_pagar_usd > 0 else 0
+
+        # Formatear números
+        def fmt(n):
+            return f"{n:,.2f}".replace(",", ".")
+
+        salario_base_bs_str = fmt(salario_base_bs)
+        horas_extras_bs_str = fmt(horas_extras_bs)
+        bono_comp_bs_str = fmt(bono_comp_bs)
+        total_asignaciones_bs_str = fmt(total_asignaciones_bs)
+        total_deducciones_bs_str = fmt(total_deducciones_bs)
+        neto_bs_str = fmt(neto_bs)
+        sso_bs_str = fmt(sso_bs)
+        rpe_bs_str = fmt(rpe_bs)
+        faov_bs_str = fmt(faov_bs)
+        tasa_bcv_str = fmt(tasa_bcv)
+        salario_mensual_bs_str = fmt(salario_mensual_bs)
+        pago_60_bs_str = fmt(pago_60_bs)
+        pago_40_bs_str = fmt(pago_40_bs)
+
+        fecha_actual = datetime.now().strftime("%d/%m/%Y")
+        hora_actual = datetime.now().strftime("%H:%M:%S")
+        numero_recibo = f"NOM-{lote_id}-{cedula}"
+
+        html = f'''
+        <!DOCTYPE html>
+        <html lang="es">
+        <head>
+            <meta charset="UTF-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <title>Recibo de Nómina</title>
+            <style>
+                * {{ margin: 0; padding: 0; box-sizing: border-box; }}
+                body {{
+                    font-family: 'Courier New', Courier, monospace;
+                    font-size: 11px;
+                    background: #f0f0f0;
+                    display: flex;
+                    justify-content: center;
+                    align-items: center;
+                    min-height: 100vh;
+                    padding: 20px;
+                }}
+                .recibo-container {{
+                    background: white;
+                    width: 210mm;
+                    padding: 15mm 12mm;
+                    box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+                    border-radius: 4px;
+                }}
+                @media print {{
+                    body {{ background: white; padding: 0; }}
+                    .recibo-container {{
+                        box-shadow: none;
+                        border-radius: 0;
+                        padding: 10mm 12mm;
+                        width: 100%;
+                    }}
+                    .no-print {{ display: none !important; }}
+                }}
+                .print-header {{
+                    display: flex;
+                    justify-content: space-between;
+                    align-items: center;
+                    margin-bottom: 15px;
+                    padding-bottom: 10px;
+                    border-bottom: 1px solid #ddd;
+                }}
+                .btn-print {{
+                    background: #1a2a6c;
+                    color: white;
+                    border: none;
+                    padding: 8px 20px;
+                    border-radius: 4px;
+                    cursor: pointer;
+                    font-size: 12px;
+                    font-weight: 600;
+                }}
+                .btn-print:hover {{ background: #2d4373; }}
+                .btn-pdf {{
+                    background: #dc3545;
+                    color: white;
+                    border: none;
+                    padding: 8px 20px;
+                    border-radius: 4px;
+                    cursor: pointer;
+                    font-size: 12px;
+                    font-weight: 600;
+                    margin-left: 8px;
+                }}
+                .btn-pdf:hover {{ background: #c82333; }}
+                .header {{
+                    text-align: center;
+                    margin-bottom: 10px;
+                    padding-bottom: 8px;
+                    border-bottom: 2px solid #000;
+                }}
+                .header .title {{ font-size: 16px; font-weight: bold; }}
+                .header .subtitle {{ font-size: 12px; }}
+                .header .rif {{ font-size: 11px; color: #555; }}
+                .header .boleto {{ font-size: 13px; font-weight: bold; margin-top: 3px; }}
+                .header .status {{ display: inline-block; padding: 2px 12px; background: #28a745; color: white; border-radius: 3px; font-size: 10px; font-weight: bold; }}
+                .header .fecha-hora {{ font-size: 11px; color: #555; }}
+                .separator {{ border: none; border-top: 1px dashed #999; margin: 6px 0; }}
+                .section-title {{ font-weight: bold; font-size: 12px; margin: 8px 0 4px 0; }}
+                .section {{ margin-bottom: 6px; }}
+                .row {{ display: flex; justify-content: space-between; padding: 2px 0; }}
+                .row-label {{ font-weight: bold; }}
+                .table {{ width: 100%; border-collapse: collapse; margin: 4px 0; }}
+                .table th {{ border-bottom: 2px solid #000; padding: 4px 6px; text-align: left; font-size: 10px; }}
+                .table td {{ padding: 3px 6px; border-bottom: 1px solid #ddd; font-size: 10px; }}
+                .table .total-row td {{ border-top: 2px solid #000; font-weight: bold; }}
+                .table .total-row td:last-child {{ text-align: right; }}
+                .table .right {{ text-align: right; }}
+                .table .center {{ text-align: center; }}
+                .valores {{
+                    font-size: 10px;
+                    margin: 4px 0;
+                    padding: 4px 8px;
+                    background: #f8f9fa;
+                    border: 1px solid #ddd;
+                    border-radius: 3px;
+                }}
+                .valores .row {{ padding: 1px 0; }}
+                .declaracion {{
+                    font-size: 10px;
+                    margin: 8px 0;
+                    padding: 6px;
+                    border: 1px solid #ddd;
+                    border-radius: 3px;
+                    background: #fafafa;
+                }}
+                .firmas {{
+                    margin: 10px 0;
+                    display: flex;
+                    justify-content: space-between;
+                }}
+                .firmas .firma {{
+                    text-align: center;
+                    width: 45%;
+                }}
+                .firmas .linea {{
+                    border-top: 1px solid #000;
+                    width: 80%;
+                    margin: 20px auto 4px auto;
+                }}
+                .footer {{
+                    text-align: center;
+                    font-size: 9px;
+                    color: #888;
+                    margin-top: 8px;
+                    border-top: 2px solid #000;
+                    padding-top: 6px;
+                }}
+                .monto-bs {{
+                    font-weight: bold;
+                    color: #1a2a6c;
+                }}
+                .monto-descuento {{
+                    color: #dc3545;
+                }}
+                @media print {{
+                    .recibo-container {{
+                        padding: 8mm 10mm;
+                    }}
+                    .header .title {{ font-size: 14px; }}
+                    .btn-print, .btn-pdf {{ display: none !important; }}
+                }}
+                @page {{
+                    size: A4;
+                    margin: 0;
+                }}
+            </style>
+        </head>
+        <body>
+            <div class="recibo-container" id="recibo">
+                <div class="print-header no-print">
+                    <span style="font-weight: bold; font-size: 14px;">📄 Recibo de Nómina</span>
+                    <div>
+                        <button class="btn-print" onclick="window.print()">🖨️ Imprimir</button>
+                        <button class="btn-pdf" onclick="window.print()">📥 PDF</button>
+                    </div>
+                </div>
+
+                <div class="header">
+                    <div class="title">{nombre_cuenta}</div>
+                    <div class="rif">RIF: {rif_empresa}</div>
+                    <div class="subtitle">RECIBO DE NÓMINA</div>
+                    <div class="boleto">BOLETO: {numero_recibo}</div>
+                    <div style="display:flex; justify-content:space-between; margin-top:4px;">
+                        <span><span class="status">PAGADO</span></span>
+                        <span class="fecha-hora">Fecha: {fecha_actual}  Hora: {hora_actual}</span>
+                    </div>
+                    <div style="font-size:10px; color:#555; margin-top:2px;">PAGO DE SUELDO Y BENEFICIOS</div>
+                </div>
+
+                <hr class="separator">
+
+                <div class="section">
+                    <div class="section-title">EMPLEADO</div>
+                    <div class="row"><span class="row-label">NOMBRE:</span> <span>{nombre_completo}</span></div>
+                    <div class="row"><span class="row-label">C.I.:</span> <span>{cedula}</span></div>
+                    <div class="row"><span class="row-label">CARGO:</span> <span>{cargo}</span></div>
+                    <div class="row"><span class="row-label">FECHA INGRESO:</span> <span>{fecha_ingreso_str}</span></div>
+                    <div class="row"><span class="row-label">PERIODO:</span> <span>{fecha_inicio_str} al {fecha_fin_str}</span></div>
+                    <div class="row"><span class="row-label">TIPO PAGO:</span> <span>{tipo}</span></div>
+                </div>
+
+                <hr class="separator">
+
+                <div class="section">
+                    <div class="section-title">DETALLE DE LIQUIDACIÓN</div>
+                    <table class="table">
+                        <thead>
+                            <tr>
+                                <th>CÓDIGO</th>
+                                <th>CONCEPTO</th>
+                                <th style="text-align:right;">MONTO Bs.</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td>1000</td>
+                                <td>Salario Base del Período</td>
+                                <td class="right">{salario_base_bs_str}</td>
+                            </tr>
+                            <tr>
+                                <td>1004</td>
+                                <td>Horas Extras</td>
+                                <td class="right">{horas_extras_bs_str}</td>
+                            </tr>
+                            <tr>
+                                <td>1010</td>
+                                <td>Bono Complementario (Exento)</td>
+                                <td class="right">{bono_comp_bs_str}</td>
+                            </tr>
+                            <tr style="font-weight:bold; border-top:1px solid #000;">
+                                <td colspan="2">TOTAL ASIGNACIONES</td>
+                                <td class="right monto-bs">{total_asignaciones_bs_str}</td>
+                            </tr>
+                            <tr>
+                                <td>4900</td>
+                                <td>Seguro Social (SSO) 4%</td>
+                                <td class="right monto-descuento">({sso_bs_str})</td>
+                            </tr>
+                            <tr>
+                                <td>4905</td>
+                                <td>RPE 0.5%</td>
+                                <td class="right monto-descuento">({rpe_bs_str})</td>
+                            </tr>
+                            <tr>
+                                <td>4910</td>
+                                <td>FAOV 1%</td>
+                                <td class="right monto-descuento">({faov_bs_str})</td>
+                            </tr>
+                            <tr style="font-weight:bold; border-top:1px solid #000;">
+                                <td colspan="2">TOTAL DEDUCCIONES</td>
+                                <td class="right monto-descuento">({total_deducciones_bs_str})</td>
+                            </tr>
+                            <tr class="total-row">
+                                <td colspan="2">LÍQUIDO A PAGAR</td>
+                                <td class="right monto-bs">{neto_bs_str}</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+
+                <hr class="separator">
+
+                <div class="section">
+                    <div class="section-title">FORMA DE PAGO</div>
+                    <div class="row"><span class="row-label">Pago en Cuenta (60% + Bono):</span> <span>{pago_60_bs_str}</span></div>
+                    <div class="row"><span class="row-label">Pago en Efectivo (40%):</span> <span>{pago_40_bs_str}</span></div>
+                </div>
+
+                <hr class="separator">
+
+                <div class="valores">
+                    <div class="row"><span class="row-label">Salario Mensual (Bs.):</span> <span>{salario_mensual_bs_str}</span></div>
+                    <div class="row"><span class="row-label">Salario Mensual (USD):</span> <span>${salario_mensual_usd:.2f}</span></div>
+                    <div class="row"><span class="row-label">Tasa BCV:</span> <span>{tasa_bcv_str}</span></div>
+                </div>
+
+                <hr class="separator">
+
+                <div class="declaracion">
+                    <div style="font-weight:bold; margin-bottom:4px;">DECLARACIÓN Y FIRMAS</div>
+                    <p>Declaro que he recibido el total indicado y recibo de conformidad
+                    con lo establecido en la Ley Orgánica del Trabajo, los Trabajadores y las Trabajadoras (LOTTT).
+                    </p>
+                </div>
+
+                <div class="firmas">
+                    <div class="firma">
+                        <div class="linea"></div>
+                        <div style="font-size:9px;">RECIBO CONFORME</div>
+                        <div style="font-size:9px; color:#555;">FIRMA, CÉDULA</div>
+                    </div>
+                    <div class="firma">
+                        <div class="linea"></div>
+                        <div style="font-size:9px;">SELLO HÚMEDO</div>
+                    </div>
+                </div>
+
+                <div style="text-align:center; margin:8px 0;">
+                    <div style="font-size:12px; font-weight:bold;">HUELLAS</div>
+                </div>
+
+                <div style="text-align:right; font-size:10px; margin-top:4px;">
+                    Fecha: {fecha_actual}
+                </div>
+
+                <div class="footer">
+                    FIN DEL RECIBO &nbsp;|&nbsp; LOTE: {lote_id} - ID: {id_nomina}
+                </div>
+            </div>
+
+            <script>
+                function imprimirRecibo() {{
+                    window.print();
+                }}
+                document.addEventListener('keydown', function(e) {{
+                    if ((e.ctrlKey || e.metaKey) && e.key === 'p') {{
+                        e.preventDefault();
+                        window.print();
+                    }}
+                }});
+            </script>
+        </body>
+        </html>
+        '''
+
+        return html, 200, {'Content-Type': 'text/html'}
+
+    except Exception as e:
+        print(f"❌ Error generando recibo HTML de nómina: {e}")
+        import traceback
+        traceback.print_exc()
+        return f"<h1>Error al generar el recibo</h1><p>{str(e)}</p>", 500
+
+# ============================================
 # RECIBO CESTATICKET PARA MATRIZ DE PUNTO (VERSIÓN TXT)
 # ============================================
 @app.route('/api/generar_recibo_cestaticket_matriz/<int:id>', methods=['GET'])
@@ -2253,7 +2695,7 @@ def generar_lote_pdf(lote_id):
         return jsonify({'error': f'Error interno generando el PDF del lote: {str(e)}'}), 500
 
 # ============================================
-# GENERADOR DE RECIBO DE NÓMINA
+# GENERADOR DE RECIBO DE NÓMINA (PDF - reportlab)
 # ============================================
 @app.route('/api/generar_recibo/<int:id_nomina>', methods=['GET'])
 @login_required
