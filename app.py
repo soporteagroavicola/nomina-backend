@@ -815,30 +815,44 @@ def get_lotes_cestaticket():
     } for r in rows])
 
 # ============================================
-# RUTA UNIFICADA PARA CESTATICKET (GET y DELETE)
+# 🔥 RUTA UNIFICADA PARA VER Y ELIMINAR LOTE DE NÓMINA (CÓDIGO REAL RESTAURADO)
 # ============================================
-@app.route('/api/lotes_cestaticket/<int:id>', methods=['GET', 'DELETE'])
+@app.route('/api/lotes/<int:id>', methods=['GET', 'DELETE'])
 @login_required
-def manejar_lote_cestaticket(id):
+def manejar_lote(id):
+    # ------------------------
+    # SI ES UN GET (VER DETALLE DEL LOTE)
+    # ------------------------
     if request.method == 'GET':
         try:
             conn = get_db_connection()
             if not conn: return jsonify({'error': 'Error de conexión'}), 500
             cur = conn.cursor()
             
-            cur.execute("SELECT * FROM cestaticket_lotes WHERE id_lote = %s", (id,))
+            # 1. Obtener datos del lote
+            cur.execute("SELECT * FROM lotes_nomina WHERE id_lote = %s", (id,))
             lote_row = cur.fetchone()
             if not lote_row: return jsonify({'error': 'Lote no encontrado'}), 404
-
+            
+            # 2. Obtener tasa BCV
+            cur.execute("SELECT valor FROM parametros WHERE clave = 'tasa_bcv'")
+            tasa_row = cur.fetchone()
+            tasa_bcv = float(tasa_row[0]) if tasa_row else 755.1552
+            
+            # 3. Obtener las nóminas de los empleados de ese lote
             cur.execute('''
                 SELECT 
-                    c.id, c.id_empleado, c.fecha_inicio, c.fecha_fin, 
-                    c.dias_pagados, c.valor_diario_usd, c.tasa_bcv, 
-                    c.total_usd, c.total_bs, c.descripcion, c.lote_id,
-                    e.nombres, e.apellidos, e.cedula, e.cargo
-                FROM cestaticket_nominas c
-                JOIN empleados e ON c.id_empleado = e.id_empleado
-                WHERE c.lote_id = %s
+                    n.id_nomina, n.id_empleado, n.fecha_inicio, n.fecha_fin, 
+                    n.tipo, n.faltas_dias, n.salario_base_usd, 
+                    n.horas_extras_usd, n.bono_complementario_usd, 
+                    n.total_asignaciones_usd, n.total_deducciones_usd, 
+                    n.neto_pagar_usd, n.neto_pagar_bs, 
+                    n.sso_usd, n.rpe_usd, n.faov_usd,
+                    n.sso_bs, n.rpe_bs, n.faov_bs,
+                    e.nombres, e.apellidos, e.cedula
+                FROM nominas n
+                JOIN empleados e ON n.id_empleado = e.id_empleado
+                WHERE n.lote_id = %s
                 ORDER BY e.nombres
             ''', (id,))
             nominas_rows = cur.fetchall()
@@ -847,47 +861,58 @@ def manejar_lote_cestaticket(id):
             nominas = []
             for n in nominas_rows:
                 nominas.append({
-                    'id': n[0],
+                    'id_nomina': n[0],
                     'id_empleado': n[1],
                     'fecha_inicio': n[2].isoformat() if n[2] else None,
                     'fecha_fin': n[3].isoformat() if n[3] else None,
-                    'dias_pagados': n[4],
-                    'valor_diario_usd': float(n[5]) if n[5] else 0,
-                    'tasa_bcv': float(n[6]) if n[6] else 0,
-                    'total_usd': float(n[7]) if n[7] else 0,
-                    'total_bs': float(n[8]) if n[8] else 0,
-                    'descripcion': n[9],
-                    'lote_id': n[10],
-                    'nombres': n[11],
-                    'apellidos': n[12],
-                    'cedula': n[13],
-                    'cargo': n[14]
+                    'tipo': n[4],
+                    'faltas_dias': n[5],
+                    'salario_base_usd': float(n[6]) if n[6] else 0,
+                    'horas_extras_usd': float(n[7]) if n[7] else 0,
+                    'bono_complementario_usd': float(n[8]) if n[8] else 0,
+                    'total_asignaciones_usd': float(n[9]) if n[9] else 0,
+                    'total_deducciones_usd': float(n[10]) if n[10] else 0,
+                    'neto_pagar_usd': float(n[11]) if n[11] else 0,
+                    'neto_pagar_bs': float(n[12]) if n[12] else 0,
+                    'sso_usd': float(n[13]) if n[13] else 0,
+                    'rpe_usd': float(n[14]) if n[14] else 0,
+                    'faov_usd': float(n[15]) if n[15] else 0,
+                    'sso_bs': float(n[16]) if n[16] else 0,
+                    'rpe_bs': float(n[17]) if n[17] else 0,
+                    'faov_bs': float(n[18]) if n[18] else 0,
+                    'nombres': n[19],
+                    'apellidos': n[20],
+                    'cedula': n[21]
                 })
 
             return jsonify({
                 'id_lote': lote_row[0],
                 'descripcion': lote_row[1],
                 'fecha_calculo': lote_row[2].isoformat() if lote_row[2] else None,
-                'total_bs': float(lote_row[3]) if lote_row[3] else 0,
-                'cantidad_empleados': lote_row[4] if lote_row[4] else 0,
-                'tasa_bcv': float(lote_row[5]) if lote_row[5] else 0,
+                'total_usd': float(lote_row[3]) if lote_row[3] else 0,
+                'total_bs': float(lote_row[4]) if lote_row[4] else 0,
+                'cantidad_empleados': lote_row[5] if lote_row[5] else 0,
+                'tasa_bcv': tasa_bcv,
                 'nominas': nominas
             })
         except Exception as e:
-            print(f"❌ Error obteniendo detalle de cestaticket: {e}")
+            print(f"❌ Error crítico en get_lote_detalle: {e}")
             import traceback
             traceback.print_exc()
-            return jsonify({'error': f'Error interno: {str(e)}'}), 500
+            return jsonify({'error': f'Error interno del servidor: {str(e)}'}), 500
 
+    # ------------------------
+    # SI ES UN DELETE (ELIMINAR LOTE)
+    # ------------------------
     elif request.method == 'DELETE':
         conn = get_db_connection()
         if not conn: return jsonify({'error': 'Error de conexión'}), 500
         cur = conn.cursor()
         try:
-            cur.execute("DELETE FROM cestaticket_nominas WHERE lote_id = %s", (id,))
-            cur.execute("DELETE FROM cestaticket_lotes WHERE id_lote = %s", (id,))
+            cur.execute("DELETE FROM nominas WHERE lote_id = %s", (id,))
+            cur.execute("DELETE FROM lotes_nomina WHERE id_lote = %s", (id,))
             conn.commit()
-            return jsonify({'mensaje': 'Lote de cestaticket eliminado exitosamente'})
+            return jsonify({'mensaje': 'Lote eliminado exitosamente'})
         except Exception as e:
             conn.rollback()
             return jsonify({'error': str(e)}), 400
