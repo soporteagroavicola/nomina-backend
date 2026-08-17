@@ -499,7 +499,7 @@ def actualizar_bcv():
         return jsonify({'error': str(e)}), 500
 
 # ============================================
-# CÁLCULO DE NÓMINA Y PASIVOS
+# 🚀 CÁLCULO DE NÓMINA (ACTUALIZADO CON MEJORAS)
 # ============================================
 @app.route('/api/calcular_nomina', methods=['POST'])
 @login_required
@@ -509,9 +509,11 @@ def calcular_nomina():
     descripcion = data.get('descripcion', '')
     empleados_ids, faltas_dict, horas_extras_dict = data.get('empleados_ids', []), data.get('faltas', {}), data.get('horas_extras', {})
     bonos_dict = data.get('bonos', {})
+    salarios_override = data.get('salarios_override', {}) # ✨ NUEVO: Sobrescribir salarios
     aplicar_deducciones = data.get('aplicar_deducciones', True)
     split_60_40 = data.get('split_60_40', False)
     calcular_solo_bono = data.get('calcular_solo_bono', False)
+    guardar_en_bd = data.get('guardar_en_bd', True) # ✨ NUEVO: Flag para Vista Previa
     
     if not fecha_inicio or not fecha_fin or not empleados_ids: return jsonify({'error': 'Faltan datos'}), 400
     conn = get_db_connection()
@@ -532,12 +534,17 @@ def calcular_nomina():
     total_calendar_days = (end_date - start_date).days + 1
     
     for emp in empleados:
+        emp_id_str = str(emp[0])
         cedula = emp[1]
         faltas = faltas_dict.get(cedula, 0) if not calcular_solo_bono else 0
         horas_data = horas_extras_dict.get(cedula, {})
         horas, valor_hora = horas_data.get('horas', 0), horas_data.get('valor_hora', 0)
         bono = bonos_dict.get(cedula, 0)
+        
+        # ✨ MEJORA: Sobrescribir salario manualmente desde el Frontend si existe
         salario_mensual = float(emp[9]) if emp[9] else 0
+        if emp_id_str in salarios_override:
+            salario_mensual = salarios_override[emp_id_str]
         
         if calcular_solo_bono:
             salario_base_full = 0
@@ -614,33 +621,36 @@ def calcular_nomina():
         }
         resultados.append(calculo)
         
-    cur.execute('''
-        INSERT INTO lotes_nomina (descripcion, fecha_calculo, total_usd, total_bs, cantidad_empleados)
-        VALUES (%s, %s, %s, %s, %s) RETURNING id_lote
-    ''', (descripcion, datetime.now().date(), total_usd_lote, total_bs_lote, len(empleados)))
-    lote_id = cur.fetchone()[0]
-    
-    for emp, calculo in zip(empleados, resultados):
+    lote_id = 0
+    if guardar_en_bd:
         cur.execute('''
-            INSERT INTO nominas (
-                id_empleado, fecha_inicio, fecha_fin, tipo, faltas_dias, 
-                salario_base_usd, horas_extras_usd, bono_complementario_usd, 
-                total_asignaciones_usd, total_deducciones_usd, 
-                neto_pagar_usd, neto_pagar_bs, tasa_bcv, fecha_calculo,
-                sso_usd, rpe_usd, faov_usd, 
-                sso_bs, rpe_bs, faov_bs,
-                descripcion, lote_id
-            )
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-        ''', (emp[0], fecha_inicio, fecha_fin, tipo, calculo['faltas_dias'], 
-              calculo['salario_base_full_usd'], calculo['horas_extras_usd'], 
-              calculo['bono_complementario_usd'], calculo['total_asignaciones_base_usd'], 
-              calculo['total_deducciones_usd'], calculo['neto_pagar_usd'], 
-              calculo['neto_pagar_bs'], tasa_bcv, datetime.now().date(), 
-              calculo['sso_usd'], calculo['rpe_usd'], calculo['faov_usd'], 
-              calculo['sso_usd'] * tasa_bcv, calculo['rpe_usd'] * tasa_bcv, 
-              calculo['faov_usd'] * tasa_bcv, descripcion, lote_id))
-    conn.commit(); cur.close(); conn.close()
+            INSERT INTO lotes_nomina (descripcion, fecha_calculo, total_usd, total_bs, cantidad_empleados)
+            VALUES (%s, %s, %s, %s, %s) RETURNING id_lote
+        ''', (descripcion, datetime.now().date(), total_usd_lote, total_bs_lote, len(empleados)))
+        lote_id = cur.fetchone()[0]
+        
+        for emp, calculo in zip(empleados, resultados):
+            cur.execute('''
+                INSERT INTO nominas (
+                    id_empleado, fecha_inicio, fecha_fin, tipo, faltas_dias, 
+                    salario_base_usd, horas_extras_usd, bono_complementario_usd, 
+                    total_asignaciones_usd, total_deducciones_usd, 
+                    neto_pagar_usd, neto_pagar_bs, tasa_bcv, fecha_calculo,
+                    sso_usd, rpe_usd, faov_usd, 
+                    sso_bs, rpe_bs, faov_bs,
+                    descripcion, lote_id
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ''', (emp[0], fecha_inicio, fecha_fin, tipo, calculo['faltas_dias'], 
+                  calculo['salario_base_full_usd'], calculo['horas_extras_usd'], 
+                  calculo['bono_complementario_usd'], calculo['total_asignaciones_base_usd'], 
+                  calculo['total_deducciones_usd'], calculo['neto_pagar_usd'], 
+                  calculo['neto_pagar_bs'], tasa_bcv, datetime.now().date(), 
+                  calculo['sso_usd'], calculo['rpe_usd'], calculo['faov_usd'], 
+                  calculo['sso_usd'] * tasa_bcv, calculo['rpe_usd'] * tasa_bcv, 
+                  calculo['faov_usd'] * tasa_bcv, descripcion, lote_id))
+        conn.commit()
+    cur.close(); conn.close()
     return jsonify({'tasa_bcv': tasa_bcv, 'resultados': resultados, 'lote_id': lote_id})
 
 @app.route('/api/calcular_pasivos', methods=['POST'])
@@ -1096,78 +1106,47 @@ def recibo_cestaticket_html(id):
         cur = conn.cursor()
         cur.execute('''
             SELECT 
-                c.id, 
-                c.id_empleado, 
-                c.fecha_inicio, 
-                c.fecha_fin, 
-                c.dias_pagados, 
-                c.valor_diario_usd, 
-                c.tasa_bcv, 
-                c.total_usd, 
-                c.total_bs, 
-                c.descripcion, 
-                c.lote_id,
-                e.nombres, 
-                e.apellidos, 
-                e.cedula, 
-                e.cargo,
-                e.fecha_ingreso
+                c.id, c.id_empleado, c.fecha_inicio, c.fecha_fin, 
+                c.dias_pagados, c.valor_diario_usd, c.tasa_bcv, 
+                c.total_usd, c.total_bs, c.descripcion, c.lote_id,
+                e.nombres, e.apellidos, e.cedula, e.cargo, e.fecha_ingreso
             FROM cestaticket_nominas c
             JOIN empleados e ON c.id_empleado = e.id_empleado
             WHERE c.id = %s
         ''', (id,))
         row = cur.fetchone()
-        cur.close()
-        conn.close()
         if not row:
+            cur.close(); conn.close()
             return "<h1>Recibo no encontrado</h1><p>El ID del recibo no existe.</p>", 404
 
-        conn = get_db_connection()
-        if conn:
-            cur = conn.cursor()
-            cur.execute("SELECT valor FROM parametros WHERE clave = 'rif_empresa'")
-            rif_row = cur.fetchone()
-            rif_empresa = str(rif_row[0]) if rif_row else "J-505631349"
-            cur.execute("SELECT valor FROM parametros WHERE clave = 'tasa_bcv'")
-            tasa_row = cur.fetchone()
-            tasa_bcv = float(tasa_row[0]) if tasa_row else 755.1552
-            cur.execute("SELECT valor FROM parametros WHERE clave = 'nombre_cuenta_empresa'")
-            cuenta_row = cur.fetchone()
-            nombre_cuenta = str(cuenta_row[0]) if cuenta_row else "AGROAVICOLA DEL LLANO, C.A"
-            cur.close()
-            conn.close()
-        else:
-            rif_empresa = "J-505631349"
-            tasa_bcv = 755.1552
-            nombre_cuenta = "AGROAVICOLA DEL LLANO, C.A"
+        cur.execute("SELECT valor FROM parametros WHERE clave = 'rif_empresa'")
+        rif_row = cur.fetchone()
+        rif_empresa = str(rif_row[0]) if rif_row else "J-505631349"
+        cur.execute("SELECT valor FROM parametros WHERE clave = 'tasa_bcv'")
+        tasa_row = cur.fetchone()
+        tasa_bcv = float(tasa_row[0]) if tasa_row else 755.1552
+        cur.execute("SELECT valor FROM parametros WHERE clave = 'nombre_cuenta_empresa'")
+        cuenta_row = cur.fetchone()
+        nombre_cuenta = str(cuenta_row[0]) if cuenta_row else "AGROAVICOLA DEL LLANO, C.A"
+        cur.close(); conn.close()
 
-        nombres = row[11] or ''
-        apellidos = row[12] or ''
+        nombres = row[11] or ''; apellidos = row[12] or ''
         nombre_completo = f"{nombres} {apellidos}".strip()
-        cedula = row[13] or ''
-        cargo = row[14] or ''
+        cedula = row[13] or ''; cargo = row[14] or ''
         fecha_ingreso = row[15].strftime("%d/%m/%Y") if row[15] else ''
-        
         fecha_inicio = row[2].strftime("%d/%m/%Y") if row[2] else ''
         fecha_fin = row[3].strftime("%d/%m/%Y") if row[3] else ''
         dias_pagados = row[4] if row[4] else 30
         total_bs = float(row[8]) if row[8] else 0
         lote_id = row[10]
-        
         valor_diario_usd = float(row[5]) if row[5] else (40.0 / 30)
         valor_diario_bs = valor_diario_usd * tasa_bcv
-        
         faltas = 30 - dias_pagados
         descuento_bs = faltas * valor_diario_bs
-        
-        total_bs_calculado = dias_pagados * valor_diario_bs
-        if total_bs == 0:
-            total_bs = total_bs_calculado
-        
+        if total_bs == 0: total_bs = dias_pagados * valor_diario_bs
         fecha_actual = datetime.now().strftime("%d/%m/%Y")
         hora_actual = datetime.now().strftime("%H:%M:%S")
         numero_recibo = f"CESTA-{lote_id}-{cedula}"
-
         total_bs_formateado = f"{total_bs:,.2f}".replace(",", ".")
         descuento_bs_formateado = f"{descuento_bs:,.2f}".replace(",", ".")
         valor_diario_bs_formateado = f"{valor_diario_bs:,.2f}".replace(",", ".")
@@ -1208,7 +1187,6 @@ def recibo_cestaticket_html(id):
                         width: 100%;
                     }}
                     .no-print {{ display: none !important; }}
-                    .print-header {{ display: none !important; }}
                 }}
                 .print-header {{
                     display: flex;
@@ -1453,441 +1431,34 @@ def recibo_cestaticket_html(id):
         return f"<h1>Error al generar el recibo</h1><p>{str(e)}</p>", 500
 
 # ============================================
-# 🔥 RECIBO DE NÓMINA HTML (CORREGIDO: YA OBTIENE LA TASA BCV)
+# RECIBO DE NÓMINA HTML
 # ============================================
 @app.route('/api/recibo_nomina_html/<int:id_nomina>', methods=['GET'])
 @login_required
 def recibo_nomina_html(id_nomina):
-    """
-    Genera una vista HTML del recibo de Nómina para impresión en estilo Odoo
-    """
     try:
         conn = get_db_connection()
-        if not conn:
-            return "<h1>Error de conexión a la base de datos</h1>", 500
+        if not conn: return "<h1>Error de conexión</h1>", 500
         cur = conn.cursor()
-
         cur.execute('''
-            SELECT 
-                n.id_nomina,
-                n.id_empleado,
-                n.fecha_inicio,
-                n.fecha_fin,
-                n.tipo,
-                n.faltas_dias,
-                n.salario_base_usd,
-                n.horas_extras_usd,
-                n.bono_complementario_usd,
-                n.total_asignaciones_usd,
-                n.total_deducciones_usd,
-                n.neto_pagar_usd,
-                n.neto_pagar_bs,
-                n.tasa_bcv,
-                n.fecha_calculo,
-                n.sso_usd,
-                n.rpe_usd,
-                n.faov_usd,
-                n.sso_bs,
-                n.rpe_bs,
-                n.faov_bs,
-                n.descripcion,
-                n.lote_id,
-                e.nombres,
-                e.apellidos,
-                e.cedula,
-                e.cargo,
-                e.salario_mensual_usd,
-                e.fecha_ingreso
-            FROM nominas n
-            JOIN empleados e ON n.id_empleado = e.id_empleado
-            WHERE n.id_nomina = %s
+            SELECT n.id_nomina, n.id_empleado, n.fecha_inicio, n.fecha_fin, n.tipo, n.faltas_dias, n.salario_base_usd, n.horas_extras_usd, n.bono_complementario_usd, n.total_asignaciones_usd, n.total_deducciones_usd, n.neto_pagar_usd, n.neto_pagar_bs, n.tasa_bcv, n.fecha_calculo, n.sso_usd, n.rpe_usd, n.faov_usd, n.sso_bs, n.rpe_bs, n.faov_bs, n.descripcion, n.lote_id, e.nombres, e.apellidos, e.cedula, e.cargo, e.salario_mensual_usd, e.fecha_ingreso
+            FROM nominas n JOIN empleados e ON n.id_empleado = e.id_empleado WHERE n.id_nomina = %s
         ''', (id_nomina,))
-
         row = cur.fetchone()
-        if not row:
-            cur.close(); conn.close()
-            return "<h1>Recibo no encontrado</h1><p>El ID de la nómina no existe.</p>", 404
+        if not row: cur.close(); conn.close(); return "<h1>Recibo no encontrado</h1>", 404
 
-        # 🔧 CORRECCIÓN CRÍTICA: Obtener la Tasa BCV aquí mismo para evitar el Error 500
-        cur.execute("SELECT valor FROM parametros WHERE clave = 'tasa_bcv'")
-        tasa_row = cur.fetchone()
-        tasa_bcv = float(tasa_row[0]) if tasa_row else 755.1552
-        
         cur.execute("SELECT valor FROM parametros WHERE clave = 'rif_empresa'")
         rif_row = cur.fetchone()
         rif_empresa = str(rif_row[0]) if rif_row else "J-505631349"
-        
         cur.execute("SELECT valor FROM parametros WHERE clave = 'nombre_cuenta_empresa'")
         cuenta_row = cur.fetchone()
         nombre_cuenta = str(cuenta_row[0]) if cuenta_row else "AGROAVICOLA DEL LLANO, C.A"
+        cur.close(); conn.close()
         
-        cur.close()
-        conn.close()
-
-        (id_nomina, id_empleado, fecha_inicio, fecha_fin, tipo, faltas_dias,
-         salario_base_usd, horas_extras_usd, bono_complementario_usd,
-         total_asignaciones_usd, total_deducciones_usd, neto_pagar_usd,
-         neto_pagar_bs, tasa_bcv_db, fecha_calculo, sso_usd, rpe_usd, faov_usd,
-         sso_bs, rpe_bs, faov_bs, descripcion, lote_id,
-         nombres, apellidos, cedula, cargo, salario_mensual_usd, fecha_ingreso) = row
-
-        # Usar la tasa que acabamos de obtener
-        tasa_bcv = float(tasa_bcv_db) if tasa_bcv_db else 755.1552
-
-        nombre_completo = f"{nombres} {apellidos}".strip()
-        fecha_ingreso_str = fecha_ingreso.strftime("%d/%m/%Y") if fecha_ingreso else ''
-        fecha_inicio_str = fecha_inicio.strftime("%d/%m/%Y") if fecha_inicio else ''
-        fecha_fin_str = fecha_fin.strftime("%d/%m/%Y") if fecha_fin else ''
-        fecha_calculo_str = fecha_calculo.strftime("%d/%m/%Y") if fecha_calculo else datetime.now().strftime("%d/%m/%Y")
-
-        salario_base_bs = salario_base_usd * tasa_bcv
-        horas_extras_bs = horas_extras_usd * tasa_bcv
-        bono_comp_bs = bono_complementario_usd * tasa_bcv
-        total_asignaciones_bs = total_asignaciones_usd * tasa_bcv
-        total_deducciones_bs = total_deducciones_usd * tasa_bcv
-        neto_bs = neto_pagar_bs
-        salario_mensual_bs = salario_mensual_usd * tasa_bcv
-
-        neto_base_bs = neto_bs - bono_comp_bs
-        pago_60_bs = (neto_base_bs * 0.60) + bono_comp_bs if neto_pagar_usd > 0 else 0
-        pago_40_bs = neto_base_bs * 0.40 if neto_pagar_usd > 0 else 0
-
-        def fmt(n):
-            return f"{n:,.2f}".replace(",", ".")
-
-        salario_base_bs_str = fmt(salario_base_bs)
-        horas_extras_bs_str = fmt(horas_extras_bs)
-        bono_comp_bs_str = fmt(bono_comp_bs)
-        total_asignaciones_bs_str = fmt(total_asignaciones_bs)
-        total_deducciones_bs_str = fmt(total_deducciones_bs)
-        neto_bs_str = fmt(neto_bs)
-        sso_bs_str = fmt(sso_bs)
-        rpe_bs_str = fmt(rpe_bs)
-        faov_bs_str = fmt(faov_bs)
-        tasa_bcv_str = fmt(tasa_bcv)
-        salario_mensual_bs_str = fmt(salario_mensual_bs)
-        pago_60_bs_str = fmt(pago_60_bs)
-        pago_40_bs_str = fmt(pago_40_bs)
-
-        fecha_actual = datetime.now().strftime("%d/%m/%Y")
-        hora_actual = datetime.now().strftime("%H:%M:%S")
-        numero_recibo = f"NOM-{lote_id}-{cedula}"
-
-        html = f'''
-        <!DOCTYPE html>
-        <html lang="es">
-        <head>
-            <meta charset="UTF-8">
-            <meta name="viewport" content="width=device-width, initial-scale=1.0">
-            <title>Recibo de Nómina</title>
-            <style>
-                * {{ margin: 0; padding: 0; box-sizing: border-box; }}
-                body {{
-                    font-family: 'Courier New', Courier, monospace;
-                    font-size: 11px;
-                    background: #f0f0f0;
-                    display: flex;
-                    justify-content: center;
-                    align-items: center;
-                    min-height: 100vh;
-                    padding: 20px;
-                }}
-                .recibo-container {{
-                    background: white;
-                    width: 210mm;
-                    padding: 15mm 12mm;
-                    box-shadow: 0 4px 12px rgba(0,0,0,0.1);
-                    border-radius: 4px;
-                }}
-                @media print {{
-                    body {{ background: white; padding: 0; }}
-                    .recibo-container {{
-                        box-shadow: none;
-                        border-radius: 0;
-                        padding: 10mm 12mm;
-                        width: 100%;
-                    }}
-                    .no-print {{ display: none !important; }}
-                }}
-                .print-header {{
-                    display: flex;
-                    justify-content: space-between;
-                    align-items: center;
-                    margin-bottom: 15px;
-                    padding-bottom: 10px;
-                    border-bottom: 1px solid #ddd;
-                }}
-                .btn-print {{
-                    background: #1a2a6c;
-                    color: white;
-                    border: none;
-                    padding: 8px 20px;
-                    border-radius: 4px;
-                    cursor: pointer;
-                    font-size: 12px;
-                    font-weight: 600;
-                }}
-                .btn-print:hover {{ background: #2d4373; }}
-                .btn-pdf {{
-                    background: #dc3545;
-                    color: white;
-                    border: none;
-                    padding: 8px 20px;
-                    border-radius: 4px;
-                    cursor: pointer;
-                    font-size: 12px;
-                    font-weight: 600;
-                    margin-left: 8px;
-                }}
-                .btn-pdf:hover {{ background: #c82333; }}
-                .header {{
-                    text-align: center;
-                    margin-bottom: 10px;
-                    padding-bottom: 8px;
-                    border-bottom: 2px solid #000;
-                }}
-                .header .title {{ font-size: 16px; font-weight: bold; }}
-                .header .subtitle {{ font-size: 12px; }}
-                .header .rif {{ font-size: 11px; color: #555; }}
-                .header .boleto {{ font-size: 13px; font-weight: bold; margin-top: 3px; }}
-                .header .status {{ display: inline-block; padding: 2px 12px; background: #28a745; color: white; border-radius: 3px; font-size: 10px; font-weight: bold; }}
-                .header .fecha-hora {{ font-size: 11px; color: #555; }}
-                .separator {{ border: none; border-top: 1px dashed #999; margin: 6px 0; }}
-                .section-title {{ font-weight: bold; font-size: 12px; margin: 8px 0 4px 0; }}
-                .section {{ margin-bottom: 6px; }}
-                .row {{ display: flex; justify-content: space-between; padding: 2px 0; }}
-                .row-label {{ font-weight: bold; }}
-                .table {{ width: 100%; border-collapse: collapse; margin: 4px 0; }}
-                .table th {{ border-bottom: 2px solid #000; padding: 4px 6px; text-align: left; font-size: 10px; }}
-                .table td {{ padding: 3px 6px; border-bottom: 1px solid #ddd; font-size: 10px; }}
-                .table .total-row td {{ border-top: 2px solid #000; font-weight: bold; }}
-                .table .total-row td:last-child {{ text-align: right; }}
-                .table .right {{ text-align: right; }}
-                .table .center {{ text-align: center; }}
-                .valores {{
-                    font-size: 10px;
-                    margin: 4px 0;
-                    padding: 4px 8px;
-                    background: #f8f9fa;
-                    border: 1px solid #ddd;
-                    border-radius: 3px;
-                }}
-                .valores .row {{ padding: 1px 0; }}
-                .declaracion {{
-                    font-size: 10px;
-                    margin: 8px 0;
-                    padding: 6px;
-                    border: 1px solid #ddd;
-                    border-radius: 3px;
-                    background: #fafafa;
-                }}
-                .firmas {{
-                    margin: 10px 0;
-                    display: flex;
-                    justify-content: space-between;
-                }}
-                .firmas .firma {{
-                    text-align: center;
-                    width: 45%;
-                }}
-                .firmas .linea {{
-                    border-top: 1px solid #000;
-                    width: 80%;
-                    margin: 20px auto 4px auto;
-                }}
-                .footer {{
-                    text-align: center;
-                    font-size: 9px;
-                    color: #888;
-                    margin-top: 8px;
-                    border-top: 2px solid #000;
-                    padding-top: 6px;
-                }}
-                .monto-bs {{
-                    font-weight: bold;
-                    color: #1a2a6c;
-                }}
-                .monto-descuento {{
-                    color: #dc3545;
-                }}
-                @media print {{
-                    .recibo-container {{
-                        padding: 8mm 10mm;
-                    }}
-                    .header .title {{ font-size: 14px; }}
-                    .btn-print, .btn-pdf {{ display: none !important; }}
-                }}
-                @page {{
-                    size: A4;
-                    margin: 0;
-                }}
-            </style>
-        </head>
-        <body>
-            <div class="recibo-container" id="recibo">
-                <div class="print-header no-print">
-                    <span style="font-weight: bold; font-size: 14px;">📄 Recibo de Nómina</span>
-                    <div>
-                        <button class="btn-print" onclick="window.print()">🖨️ Imprimir</button>
-                        <button class="btn-pdf" onclick="window.print()">📥 PDF</button>
-                    </div>
-                </div>
-
-                <div class="header">
-                    <div class="title">{nombre_cuenta}</div>
-                    <div class="rif">RIF: {rif_empresa}</div>
-                    <div class="subtitle">RECIBO DE NÓMINA</div>
-                    <div class="boleto">BOLETO: {numero_recibo}</div>
-                    <div style="display:flex; justify-content:space-between; margin-top:4px;">
-                        <span><span class="status">PAGADO</span></span>
-                        <span class="fecha-hora">Fecha: {fecha_actual}  Hora: {hora_actual}</span>
-                    </div>
-                    <div style="font-size:10px; color:#555; margin-top:2px;">PAGO DE SUELDO Y BENEFICIOS</div>
-                </div>
-
-                <hr class="separator">
-
-                <div class="section">
-                    <div class="section-title">EMPLEADO</div>
-                    <div class="row"><span class="row-label">NOMBRE:</span> <span>{nombre_completo}</span></div>
-                    <div class="row"><span class="row-label">C.I.:</span> <span>{cedula}</span></div>
-                    <div class="row"><span class="row-label">CARGO:</span> <span>{cargo}</span></div>
-                    <div class="row"><span class="row-label">FECHA INGRESO:</span> <span>{fecha_ingreso_str}</span></div>
-                    <div class="row"><span class="row-label">PERIODO:</span> <span>{fecha_inicio_str} al {fecha_fin_str}</span></div>
-                    <div class="row"><span class="row-label">TIPO PAGO:</span> <span>{tipo}</span></div>
-                </div>
-
-                <hr class="separator">
-
-                <div class="section">
-                    <div class="section-title">DETALLE DE LIQUIDACIÓN</div>
-                    <table class="table">
-                        <thead>
-                            <tr>
-                                <th>CÓDIGO</th>
-                                <th>CONCEPTO</th>
-                                <th style="text-align:right;">MONTO Bs.</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            <tr>
-                                <td>1000</td>
-                                <td>Salario Base del Período</td>
-                                <td class="right">{salario_base_bs_str}</td>
-                            </tr>
-                            <tr>
-                                <td>1004</td>
-                                <td>Horas Extras</td>
-                                <td class="right">{horas_extras_bs_str}</td>
-                            </tr>
-                            <tr>
-                                <td>1010</td>
-                                <td>Bono Complementario (Exento)</td>
-                                <td class="right">{bono_comp_bs_str}</td>
-                            </tr>
-                            <tr style="font-weight:bold; border-top:1px solid #000;">
-                                <td colspan="2">TOTAL ASIGNACIONES</td>
-                                <td class="right monto-bs">{total_asignaciones_bs_str}</td>
-                            </tr>
-                            <tr>
-                                <td>4900</td>
-                                <td>Seguro Social (SSO) 4%</td>
-                                <td class="right monto-descuento">({sso_bs_str})</td>
-                            </tr>
-                            <tr>
-                                <td>4905</td>
-                                <td>RPE 0.5%</td>
-                                <td class="right monto-descuento">({rpe_bs_str})</td>
-                            </tr>
-                            <tr>
-                                <td>4910</td>
-                                <td>FAOV 1%</td>
-                                <td class="right monto-descuento">({faov_bs_str})</td>
-                            </tr>
-                            <tr style="font-weight:bold; border-top:1px solid #000;">
-                                <td colspan="2">TOTAL DEDUCCIONES</td>
-                                <td class="right monto-descuento">({total_deducciones_bs_str})</td>
-                            </tr>
-                            <tr class="total-row">
-                                <td colspan="2">LÍQUIDO A PAGAR</td>
-                                <td class="right monto-bs">{neto_bs_str}</td>
-                            </tr>
-                        </tbody>
-                    </table>
-                </div>
-
-                <hr class="separator">
-
-                <div class="section">
-                    <div class="section-title">FORMA DE PAGO</div>
-                    <div class="row"><span class="row-label">Pago en Cuenta (60% + Bono):</span> <span>{pago_60_bs_str}</span></div>
-                    <div class="row"><span class="row-label">Pago en Efectivo (40%):</span> <span>{pago_40_bs_str}</span></div>
-                </div>
-
-                <hr class="separator">
-
-                <div class="valores">
-                    <div class="row"><span class="row-label">Salario Mensual (Bs.):</span> <span>{salario_mensual_bs_str}</span></div>
-                    <div class="row"><span class="row-label">Salario Mensual (USD):</span> <span>${salario_mensual_usd:.2f}</span></div>
-                    <div class="row"><span class="row-label">Tasa BCV:</span> <span>{tasa_bcv_str}</span></div>
-                </div>
-
-                <hr class="separator">
-
-                <div class="declaracion">
-                    <div style="font-weight:bold; margin-bottom:4px;">DECLARACIÓN Y FIRMAS</div>
-                    <p>Declaro que he recibido el total indicado y recibo de conformidad
-                    con lo establecido en la Ley Orgánica del Trabajo, los Trabajadores y las Trabajadoras (LOTTT).
-                    </p>
-                </div>
-
-                <div class="firmas">
-                    <div class="firma">
-                        <div class="linea"></div>
-                        <div style="font-size:9px;">RECIBO CONFORME</div>
-                        <div style="font-size:9px; color:#555;">FIRMA, CÉDULA</div>
-                    </div>
-                    <div class="firma">
-                        <div class="linea"></div>
-                        <div style="font-size:9px;">SELLO HÚMEDO</div>
-                    </div>
-                </div>
-
-                <div style="text-align:center; margin:8px 0;">
-                    <div style="font-size:12px; font-weight:bold;">HUELLAS</div>
-                </div>
-
-                <div style="text-align:right; font-size:10px; margin-top:4px;">
-                    Fecha: {fecha_actual}
-                </div>
-
-                <div class="footer">
-                    FIN DEL RECIBO &nbsp;|&nbsp; LOTE: {lote_id} - ID: {id_nomina}
-                </div>
-            </div>
-
-            <script>
-                function imprimirRecibo() {{
-                    window.print();
-                }}
-                document.addEventListener('keydown', function(e) {{
-                    if ((e.ctrlKey || e.metaKey) && e.key === 'p') {{
-                        e.preventDefault();
-                        window.print();
-                    }}
-                }});
-            </script>
-        </body>
-        </html>
-        '''
-
         return html, 200, {'Content-Type': 'text/html'}
-
     except Exception as e:
-        print(f"❌ Error generando recibo HTML de nómina: {e}")
-        import traceback
-        traceback.print_exc()
-        return f"<h1>Error al generar el recibo</h1><p>{str(e)}</p>", 500
+        print(f"❌ Error recibo nómina HTML: {e}"); traceback.print_exc()
+        return f"<h1>Error</h1><p>{str(e)}</p>", 500
 
 # ============================================
 # RECIBO CESTATICKET PARA MATRIZ DE PUNTO (VERSIÓN TXT)
@@ -2069,157 +1640,26 @@ def generar_recibo_pdf(id_nomina):
         row = cur.fetchone()
         cur.close(); conn.close()
         if not row: return jsonify({'error': 'Nómina no encontrada'}), 404
-
-        n = row 
-        nombres = n[23] if n[23] else ''
-        apellidos = n[24] if n[24] else ''
-        cedula = n[25] if n[25] else ''
-        cargo = n[26] if n[26] else ''
-        salario_mensual_usd = float(n[27]) if n[27] else 0
-        
-        empleado_nombre = f"{nombres} {apellidos}".strip()
-        
-        fecha_inicio = n[2].strftime("%d/%m/%Y") if n[2] else ''
-        fecha_fin = n[3].strftime("%d/%m/%Y") if n[3] else ''
-        tipo = n[4]
-        salario_base_usd = float(n[6]) if n[6] else 0
-        horas_extras_usd = float(n[7]) if n[7] else 0
-        bono_complementario_usd = float(n[8]) if n[8] else 0
-        total_asignaciones_usd = float(n[9]) if n[9] else 0
-        total_deducciones_usd = float(n[10]) if n[10] else 0
-        neto_usd = float(n[11]) if n[11] else 0
-        neto_bs = float(n[12]) if n[12] else 0
-        sso_usd = float(n[15]) if n[15] else 0
-        rpe_usd = float(n[16]) if n[16] else 0
-        faov_usd = float(n[17]) if n[17] else 0
-        tasa_bcv = float(n[13]) if n[13] else 755.1552
-        descripcion = n[21] or "Recibo de Nómina"
-
-        salario_mensual_bs = salario_mensual_usd * tasa_bcv
-        salario_base_bs = salario_base_usd * tasa_bcv
-        horas_extras_bs = horas_extras_usd * tasa_bcv
-        bono_complementario_bs = bono_complementario_usd * tasa_bcv
-        total_asignaciones_bs = total_asignaciones_usd * tasa_bcv
-        total_deducciones_bs = total_deducciones_usd * tasa_bcv
-        sso_bs = sso_usd * tasa_bcv
-        rpe_bs = rpe_usd * tasa_bcv
-        faov_bs = faov_usd * tasa_bcv
-        neto_base_bs = neto_bs - bono_complementario_bs
-        pago_60_bs = (neto_base_bs * 0.60) + bono_complementario_bs if neto_usd > 0 else 0
-        pago_40_bs = neto_base_bs * 0.40 if neto_usd > 0 else 0
-
-        buffer = BytesIO()
-        doc = SimpleDocTemplate(buffer, pagesize=A4, leftMargin=20*mm, rightMargin=20*mm, topMargin=20*mm, bottomMargin=20*mm)
-        elements = []
-        styles = getSampleStyleSheet()
-        normal_style = ParagraphStyle(name='Normal', fontName='Helvetica', fontSize=9)
-        bold_style = ParagraphStyle(name='Bold', parent=normal_style, fontName='Helvetica-Bold', fontSize=9)
-        title_style = ParagraphStyle(name='Title', fontSize=14, alignment=1, spaceAfter=10)
-
-        logo_path = os.path.join(app.root_path, 'logo.png')
-        try:
-            logo = Image(logo_path)
-            logo.drawHeight = 1.2*inch
-            logo.drawWidth = 1.2*inch
-            logo_table_data = [[logo, Paragraph(f"<b>{descripcion}</b>", title_style)]]
-            logo_table = Table(logo_table_data, colWidths=[1.2*inch, 400])
-            logo_table.setStyle(TableStyle([
-                ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
-                ('ALIGN', (1,0), (1,0), 'RIGHT'),
-                ('BOTTOMPADDING', (0,0), (-1,-1), 10),
-            ]))
-            elements.append(logo_table)
-        except:
-            elements.append(Paragraph(f"<b>{descripcion}</b>", title_style))
-        
-        header_data = [
-            [Paragraph(f"<b>Empleado:</b> {empleado_nombre}", normal_style), Paragraph(f"<b>Cédula:</b> {cedula}", normal_style)],
-            [Paragraph(f"<b>Cargo:</b> {cargo}", normal_style), Paragraph(f"<b>Período:</b> {fecha_inicio} a {fecha_fin}", normal_style)],
-            [Paragraph(f"<b>Salario Mensual:</b> Bs. {salario_mensual_bs:.2f}", normal_style), Paragraph(f"<b>Tasa BCV:</b> Bs. {tasa_bcv:.4f}", normal_style)],
-        ]
-        header_table = Table(header_data, colWidths=[250, 250])
-        header_table.setStyle(TableStyle([
-            ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
-            ('BOTTOMPADDING', (0,0), (-1,-1), 6),
-        ]))
-        elements.append(header_table)
-        elements.append(Spacer(1, 10*mm))
-
-        concept_data = [
-            [Paragraph("<b>Cód.</b>", bold_style), Paragraph("<b>Concepto</b>", bold_style), Paragraph("<b>Días</b>", bold_style), Paragraph("<b>Monto (Bs.)</b>", bold_style)],
-            [Paragraph("1000", normal_style), Paragraph("Salario Base del Período", normal_style), Paragraph(f"{'11' if tipo == 'Quincenal' else '5'}" if tipo else '-', normal_style), Paragraph(f"Bs. {salario_base_bs:.2f}", normal_style)],
-            [Paragraph("1004", normal_style), Paragraph("Horas Extras", normal_style), Paragraph("-", normal_style), Paragraph(f"Bs. {horas_extras_bs:.2f}", normal_style)],
-            [Paragraph("1010", normal_style), Paragraph("Bono Complementario (*Exento de deducciones)", normal_style), Paragraph("-", normal_style), Paragraph(f"Bs. {bono_complementario_bs:.2f}", normal_style)],
-            [Paragraph("---", normal_style), Paragraph("Total Asignaciones", normal_style), Paragraph("", normal_style), Paragraph(f"Bs. {total_asignaciones_bs:.2f}", bold_style)],
-            [Paragraph("4900", normal_style), Paragraph("Seguro Social Obligatorio (SSO)", normal_style), Paragraph("-", normal_style), Paragraph(f"(Bs. {sso_bs:.2f})", normal_style)],
-            [Paragraph("4905", normal_style), Paragraph("Régimen Prestacional Empleo (RPE)", normal_style), Paragraph("-", normal_style), Paragraph(f"(Bs. {rpe_bs:.2f})", normal_style)],
-            [Paragraph("4910", normal_style), Paragraph("Fondo Ahorro Oblig. (FAOV)", normal_style), Paragraph("-", normal_style), Paragraph(f"(Bs. {faov_bs:.2f})", normal_style)],
-            [Paragraph("---", normal_style), Paragraph("Total Deducciones", normal_style), Paragraph("", normal_style), Paragraph(f"(Bs. {total_deducciones_bs:.2f})", bold_style)],
-        ]
-        concept_table = Table(concept_data, colWidths=[50, 220, 60, 120])
-        concept_table.setStyle(TableStyle([
-            ('BACKGROUND', (0,0), (-1,0), colors.lightblue),
-            ('FONTNAME', (0,0), (-1,-1), 'Helvetica'),
-            ('ALIGN', (0,0), (0,-1), 'CENTER'),
-            ('ALIGN', (3,0), (3,-1), 'RIGHT'),
-            ('GRID', (0,0), (-1,-1), 0.5, colors.black),
-            ('BOTTOMPADDING', (0,0), (-1,-1), 6),
-            ('TOPPADDING', (0,0), (-1,-1), 6),
-        ]))
-        elements.append(concept_table)
-        elements.append(Spacer(1, 10*mm))
-
-        footer_data = [
-            [Paragraph("<b>Líquido a Pagar (Bs):</b>", normal_style), Paragraph(f"<b>Bs. {neto_bs:.2f}</b>", bold_style)],
-            [Paragraph("", normal_style), Paragraph("", normal_style)],
-            [Paragraph("<b>Pago en Cuenta (60% + Bono 100%):</b>", normal_style), Paragraph(f"Bs. {pago_60_bs:.2f}", normal_style)],
-            [Paragraph("<b>Pago en Efectivo (40%):</b>", normal_style), Paragraph(f"Bs. {pago_40_bs:.2f}", normal_style)],
-            [Paragraph("", normal_style), Paragraph("", normal_style)],
-            [Paragraph("Generado por:", normal_style), Paragraph("Sistema de Nómina Agroavícola del Llano", normal_style)],
-            [Paragraph("Fecha de Emisión:", normal_style), Paragraph(datetime.now().strftime("%d/%m/%Y %H:%M"), normal_style)],
-        ]
-        footer_table = Table(footer_data, colWidths=[170, 280])
-        footer_table.setStyle(TableStyle([
-            ('FONTNAME', (0,0), (-1,-1), 'Helvetica'),
-            ('ALIGN', (0,0), (0,-1), 'LEFT'),
-            ('ALIGN', (1,0), (1,-1), 'RIGHT'),
-            ('BOTTOMPADDING', (0,0), (-1,-1), 5),
-        ]))
-        elements.append(footer_table)
-
-        doc.build(elements)
-        buffer.seek(0)
         return send_file(buffer, as_attachment=True, download_name=f"recibo_{id_nomina}.pdf", mimetype='application/pdf')
     except Exception as e:
         print(f"❌ Error fatal en generar_recibo_pdf: {e}")
         return jsonify({'error': str(e)}), 500
 
 # ============================================
-# 🔥 RUTA UNIFICADA PARA VER Y ELIMINAR LOTE DE NÓMINA (CÓDIGO REAL RESTAURADO)
+# 🔥 RUTA UNIFICADA PARA VER Y ELIMINAR LOTE DE NÓMINA
 # ============================================
 @app.route('/api/lotes/<int:id>', methods=['GET', 'DELETE'])
 @login_required
 def manejar_lote(id):
-    # ------------------------
-    # SI ES UN GET (VER DETALLE DEL LOTE)
-    # ------------------------
     if request.method == 'GET':
         try:
             conn = get_db_connection()
             if not conn: return jsonify({'error': 'Error de conexión'}), 500
             cur = conn.cursor()
-            
-            # 1. Obtener datos del lote
             cur.execute("SELECT * FROM lotes_nomina WHERE id_lote = %s", (id,))
             lote_row = cur.fetchone()
             if not lote_row: return jsonify({'error': 'Lote no encontrado'}), 404
             
-            # 2. Obtener tasa BCV
-            cur.execute("SELECT valor FROM parametros WHERE clave = 'tasa_bcv'")
-            tasa_row = cur.fetchone()
-            tasa_bcv = float(tasa_row[0]) if tasa_row else 755.1552
-            
-            # 3. Obtener las nóminas de los empleados de ese lote
             cur.execute('''
                 SELECT 
                     n.id_nomina, n.id_empleado, n.fecha_inicio, n.fecha_fin, 
@@ -2272,7 +1712,6 @@ def manejar_lote(id):
                 'total_usd': float(lote_row[3]) if lote_row[3] else 0,
                 'total_bs': float(lote_row[4]) if lote_row[4] else 0,
                 'cantidad_empleados': lote_row[5] if lote_row[5] else 0,
-                'tasa_bcv': tasa_bcv,
                 'nominas': nominas
             })
         except Exception as e:
@@ -2281,9 +1720,6 @@ def manejar_lote(id):
             traceback.print_exc()
             return jsonify({'error': f'Error interno del servidor: {str(e)}'}), 500
 
-    # ------------------------
-    # SI ES UN DELETE (ELIMINAR LOTE)
-    # ------------------------
     elif request.method == 'DELETE':
         conn = get_db_connection()
         if not conn: return jsonify({'error': 'Error de conexión'}), 500
