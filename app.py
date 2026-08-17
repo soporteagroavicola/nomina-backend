@@ -1193,7 +1193,6 @@ def recibo_cestaticket_html(id):
         valor_diario_bs_formateado = f"{valor_diario_bs:,.2f}".replace(",", ".")
         tasa_bcv_formateada = f"{tasa_bcv:,.4f}".replace(",", ".")
 
-        # 🔥 HTML DEL RECIBO RESTAURADO COMPLETAMENTE
         html = f'''
         <!DOCTYPE html>
         <html lang="es">
@@ -1474,7 +1473,7 @@ def recibo_cestaticket_html(id):
         return f"<h1>Error al generar el recibo</h1><p>{str(e)}</p>", 500
 
 # ============================================
-# 🛑 RECIBO DE NÓMINA HTML (Optimizado para Matriz de Punto - Ajuste Automático)
+# 🛑 RECIBO DE NÓMINA HTML (CORREGIDO Y CON ESTILO PARA MATRIZ DE PUNTO)
 # ============================================
 @app.route('/api/recibo_nomina_html/<int:id_nomina>', methods=['GET'])
 @login_required
@@ -1593,7 +1592,7 @@ def recibo_nomina_html(id_nomina):
         hora_actual = datetime.now().strftime("%H:%M:%S")
         numero_recibo = f"NOM-{lote_id}-{cedula}"
 
-        # 🔥 CSS OPTIMIZADO PARA PAPEL CONTINUO Y MATRIZ DE PUNTO
+        # 🔥 HTML COMPLETO DEL RECIBO DE NÓMINA (ESTILO MATRIZ DE PUNTO)
         html = f'''
         <!DOCTYPE html>
         <html lang="es">
@@ -1605,7 +1604,7 @@ def recibo_nomina_html(id_nomina):
                 * {{ margin: 0; padding: 0; box-sizing: border-box; }}
                 body {{
                     font-family: 'Courier New', Courier, monospace;
-                    font-size: 12px; /* Letra más grande para matriz de punto */
+                    font-size: 12px;
                     background: #f0f0f0;
                     display: flex;
                     justify-content: center;
@@ -1615,7 +1614,7 @@ def recibo_nomina_html(id_nomina):
                 }}
                 .recibo-container {{
                     background: white;
-                    width: 210mm; /* Ancho estándar para papel de 9.5" */
+                    width: 210mm;
                     padding: 10mm 10mm;
                     box-shadow: 0 4px 12px rgba(0,0,0,0.1);
                     border-radius: 4px;
@@ -1625,7 +1624,7 @@ def recibo_nomina_html(id_nomina):
                     .recibo-container {{
                         box-shadow: none;
                         border-radius: 0;
-                        padding: 4mm 8mm; /* Márgenes ajustados */
+                        padding: 4mm 8mm;
                         width: 100%;
                         max-width: 210mm;
                     }}
@@ -1748,7 +1747,162 @@ def recibo_nomina_html(id_nomina):
                 }}
             </style>
         </head>
-        ... [El resto del HTML del recibo permanece exactamente igual al que ya tienes] ...
+        <body>
+            <div class="recibo-container" id="recibo">
+                <div class="print-header no-print">
+                    <span style="font-weight: bold; font-size: 14px;">📄 Recibo de Nómina</span>
+                    <div>
+                        <button class="btn-print" onclick="window.print()">🖨️ Imprimir</button>
+                        <button class="btn-pdf" onclick="window.print()">📥 PDF</button>
+                    </div>
+                </div>
+
+                <div class="header">
+                    <div class="title">{nombre_cuenta}</div>
+                    <div class="rif">RIF: {rif_empresa}</div>
+                    <div class="subtitle">RECIBO DE NÓMINA</div>
+                    <div class="boleto">BOLETO: {numero_recibo}</div>
+                    <div style="display:flex; justify-content:space-between; margin-top:4px;">
+                        <span><span class="status">PAGADO</span></span>
+                        <span class="fecha-hora">Fecha: {fecha_actual}  Hora: {hora_actual}</span>
+                    </div>
+                    <div style="font-size:10px; color:#555; margin-top:2px;">PAGO DE SUELDO Y BENEFICIOS</div>
+                </div>
+
+                <hr class="separator">
+
+                <div class="section">
+                    <div class="section-title">EMPLEADO</div>
+                    <div class="row"><span class="row-label">NOMBRE:</span> <span>{nombre_completo}</span></div>
+                    <div class="row"><span class="row-label">C.I.:</span> <span>{cedula}</span></div>
+                    <div class="row"><span class="row-label">CARGO:</span> <span>{cargo}</span></div>
+                    <div class="row"><span class="row-label">FECHA INGRESO:</span> <span>{fecha_ingreso_str}</span></div>
+                    <div class="row"><span class="row-label">PERIODO:</span> <span>{fecha_inicio_str} al {fecha_fin_str}</span></div>
+                    <div class="row"><span class="row-label">TIPO PAGO:</span> <span>{tipo}</span></div>
+                </div>
+
+                <hr class="separator">
+
+                <div class="section">
+                    <div class="section-title">DETALLE DE LIQUIDACIÓN</div>
+                    <table class="table">
+                        <thead>
+                            <tr>
+                                <th>CÓDIGO</th>
+                                <th>CONCEPTO</th>
+                                <th style="text-align:right;">MONTO Bs.</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td>1000</td>
+                                <td>Salario Base del Período</td>
+                                <td class="right">{salario_base_bs_str}</td>
+                            </tr>
+                            <tr>
+                                <td>1004</td>
+                                <td>Horas Extras</td>
+                                <td class="right">{horas_extras_bs_str}</td>
+                            </tr>
+                            <tr>
+                                <td>1010</td>
+                                <td>Bono Complementario (Exento)</td>
+                                <td class="right">{bono_comp_bs_str}</td>
+                            </tr>
+                            <tr style="font-weight:bold; border-top:1px solid #000;">
+                                <td colspan="2">TOTAL ASIGNACIONES</td>
+                                <td class="right monto-bs">{total_asignaciones_bs_str}</td>
+                            </tr>
+                            <tr>
+                                <td>4900</td>
+                                <td>Seguro Social (SSO) 4%</td>
+                                <td class="right monto-descuento">({sso_bs_str})</td>
+                            </tr>
+                            <tr>
+                                <td>4905</td>
+                                <td>RPE 0.5%</td>
+                                <td class="right monto-descuento">({rpe_bs_str})</td>
+                            </tr>
+                            <tr>
+                                <td>4910</td>
+                                <td>FAOV 1%</td>
+                                <td class="right monto-descuento">({faov_bs_str})</td>
+                            </tr>
+                            <tr style="font-weight:bold; border-top:1px solid #000;">
+                                <td colspan="2">TOTAL DEDUCCIONES</td>
+                                <td class="right monto-descuento">({total_deducciones_bs_str})</td>
+                            </tr>
+                            <tr class="total-row">
+                                <td colspan="2">LÍQUIDO A PAGAR</td>
+                                <td class="right monto-bs">{neto_bs_str}</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+
+                <hr class="separator">
+
+                <div class="section">
+                    <div class="section-title">FORMA DE PAGO</div>
+                    <div class="row"><span class="row-label">Pago en Cuenta (60% + Bono):</span> <span>{pago_60_bs_str}</span></div>
+                    <div class="row"><span class="row-label">Pago en Efectivo (40%):</span> <span>{pago_40_bs_str}</span></div>
+                </div>
+
+                <hr class="separator">
+
+                <div class="valores">
+                    <div class="row"><span class="row-label">Salario Mensual (Bs.):</span> <span>{salario_mensual_bs_str}</span></div>
+                    <div class="row"><span class="row-label">Salario Mensual (USD):</span> <span>${salario_mensual_usd:.2f}</span></div>
+                    <div class="row"><span class="row-label">Tasa BCV:</span> <span>{tasa_bcv_str}</span></div>
+                </div>
+
+                <hr class="separator">
+
+                <div class="declaracion">
+                    <div style="font-weight:bold; margin-bottom:4px;">DECLARACIÓN Y FIRMAS</div>
+                    <p>Declaro que he recibido el total indicado y recibo de conformidad
+                    con lo establecido en la Ley Orgánica del Trabajo, los Trabajadores y las Trabajadoras (LOTTT).
+                    </p>
+                </div>
+
+                <div class="firmas">
+                    <div class="firma">
+                        <div class="linea"></div>
+                        <div style="font-size:9px;">RECIBO CONFORME</div>
+                        <div style="font-size:9px; color:#555;">FIRMA, CÉDULA</div>
+                    </div>
+                    <div class="firma">
+                        <div class="linea"></div>
+                        <div style="font-size:9px;">SELLO HÚMEDO</div>
+                    </div>
+                </div>
+
+                <div style="text-align:center; margin:8px 0;">
+                    <div style="font-size:12px; font-weight:bold;">HUELLAS</div>
+                </div>
+
+                <div style="text-align:right; font-size:10px; margin-top:4px;">
+                    Fecha: {fecha_actual}
+                </div>
+
+                <div class="footer">
+                    FIN DEL RECIBO &nbsp;|&nbsp; LOTE: {lote_id} - ID: {id_nomina}
+                </div>
+            </div>
+
+            <script>
+                function imprimirRecibo() {{
+                    window.print();
+                }}
+                document.addEventListener('keydown', function(e) {{
+                    if ((e.ctrlKey || e.metaKey) && e.key === 'p') {{
+                        e.preventDefault();
+                        window.print();
+                    }}
+                }});
+            </script>
+        </body>
+        </html>
         '''
 
         return html, 200, {'Content-Type': 'text/html'}
@@ -1758,6 +1912,7 @@ def recibo_nomina_html(id_nomina):
         import traceback
         traceback.print_exc()
         return f"<h1>Error al generar el recibo</h1><p>{str(e)}</p>", 500
+
 # ============================================
 # RECIBO CESTATICKET PARA MATRIZ DE PUNTO (VERSIÓN TXT)
 # ============================================
