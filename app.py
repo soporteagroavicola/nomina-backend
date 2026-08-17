@@ -1094,79 +1094,391 @@ def generar_recibo_cestaticket(id):
         return jsonify({'error': str(e)}), 500
 
 # ============================================
-# RECIBO CESTATICKET HTML
+# 🛑 RECIBO CESTATICKET HTML (CORREGIDO Y RESTAURADO AL 100%)
 # ============================================
 @app.route('/api/recibo_cestaticket_html/<int:id>', methods=['GET'])
 @login_required
 def recibo_cestaticket_html(id):
+    """
+    Genera una vista HTML del recibo de Cestaticket para impresión en estilo Odoo
+    TODOS LOS MONTOS EN BOLÍVARES (Bs.) - SIN DÓLARES
+    """
     try:
         conn = get_db_connection()
-        if not conn: return "<h1>Error de conexión a la base de datos</h1>", 500
+        if not conn:
+            return "<h1>Error de conexión a la base de datos</h1>", 500
         cur = conn.cursor()
+        
         cur.execute('''
             SELECT 
-                c.id, c.id_empleado, c.fecha_inicio, c.fecha_fin, 
-                c.dias_pagados, c.valor_diario_usd, c.tasa_bcv, 
-                c.total_usd, c.total_bs, c.descripcion, c.lote_id,
-                e.nombres, e.apellidos, e.cedula, e.cargo, e.fecha_ingreso
+                c.id, 
+                c.id_empleado, 
+                c.fecha_inicio, 
+                c.fecha_fin, 
+                c.dias_pagados, 
+                c.valor_diario_usd, 
+                c.tasa_bcv, 
+                c.total_usd, 
+                c.total_bs, 
+                c.descripcion, 
+                c.lote_id,
+                e.nombres, 
+                e.apellidos, 
+                e.cedula, 
+                e.cargo,
+                e.fecha_ingreso
             FROM cestaticket_nominas c
             JOIN empleados e ON c.id_empleado = e.id_empleado
             WHERE c.id = %s
         ''', (id,))
+        
         row = cur.fetchone()
+        cur.close()
+        conn.close()
+        
         if not row:
-            cur.close(); conn.close()
             return "<h1>Recibo no encontrado</h1><p>El ID del recibo no existe.</p>", 404
 
-        cur.execute("SELECT valor FROM parametros WHERE clave = 'rif_empresa'")
-        rif_row = cur.fetchone()
-        rif_empresa = str(rif_row[0]) if rif_row else "J-505631349"
-        cur.execute("SELECT valor FROM parametros WHERE clave = 'tasa_bcv'")
-        tasa_row = cur.fetchone()
-        tasa_bcv = float(tasa_row[0]) if tasa_row else 755.1552
-        cur.execute("SELECT valor FROM parametros WHERE clave = 'nombre_cuenta_empresa'")
-        cuenta_row = cur.fetchone()
-        nombre_cuenta = str(cuenta_row[0]) if cuenta_row else "AGROAVICOLA DEL LLANO, C.A"
-        cur.close(); conn.close()
+        conn = get_db_connection()
+        if conn:
+            cur = conn.cursor()
+            cur.execute("SELECT valor FROM parametros WHERE clave = 'rif_empresa'")
+            rif_row = cur.fetchone()
+            rif_empresa = str(rif_row[0]) if rif_row else "J-505631349"
+            
+            cur.execute("SELECT valor FROM parametros WHERE clave = 'tasa_bcv'")
+            tasa_row = cur.fetchone()
+            tasa_bcv = float(tasa_row[0]) if tasa_row else 755.1552
+            
+            cur.execute("SELECT valor FROM parametros WHERE clave = 'nombre_cuenta_empresa'")
+            cuenta_row = cur.fetchone()
+            nombre_cuenta = str(cuenta_row[0]) if cuenta_row else "AGROAVICOLA DEL LLANO, C.A"
+            
+            cur.close()
+            conn.close()
+        else:
+            rif_empresa = "J-505631349"
+            tasa_bcv = 755.1552
+            nombre_cuenta = "AGROAVICOLA DEL LLANO, C.A"
 
-        nombres = row[11] or ''; apellidos = row[12] or ''
+        nombres = row[11] or ''
+        apellidos = row[12] or ''
         nombre_completo = f"{nombres} {apellidos}".strip()
-        cedula = row[13] or ''; cargo = row[14] or ''
+        cedula = row[13] or ''
+        cargo = row[14] or ''
         fecha_ingreso = row[15].strftime("%d/%m/%Y") if row[15] else ''
+        
         fecha_inicio = row[2].strftime("%d/%m/%Y") if row[2] else ''
         fecha_fin = row[3].strftime("%d/%m/%Y") if row[3] else ''
         dias_pagados = row[4] if row[4] else 30
         total_bs = float(row[8]) if row[8] else 0
         lote_id = row[10]
+        
         valor_diario_usd = float(row[5]) if row[5] else (40.0 / 30)
         valor_diario_bs = valor_diario_usd * tasa_bcv
+        
         faltas = 30 - dias_pagados
         descuento_bs = faltas * valor_diario_bs
-        if total_bs == 0: total_bs = dias_pagados * valor_diario_bs
+        
+        total_bs_calculado = dias_pagados * valor_diario_bs
+        if total_bs == 0:
+            total_bs = total_bs_calculado
+        
         fecha_actual = datetime.now().strftime("%d/%m/%Y")
         hora_actual = datetime.now().strftime("%H:%M:%S")
         numero_recibo = f"CESTA-{lote_id}-{cedula}"
+
         total_bs_formateado = f"{total_bs:,.2f}".replace(",", ".")
         descuento_bs_formateado = f"{descuento_bs:,.2f}".replace(",", ".")
         valor_diario_bs_formateado = f"{valor_diario_bs:,.2f}".replace(",", ".")
         tasa_bcv_formateada = f"{tasa_bcv:,.4f}".replace(",", ".")
 
-        html = f'''... [El HTML completo que ya tenías] ...'''
+        # 🔥 HTML DEL RECIBO RESTAURADO COMPLETAMENTE
+        html = f'''
+        <!DOCTYPE html>
+        <html lang="es">
+        <head>
+            <meta charset="UTF-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <title>Recibo Cestaticket</title>
+            <style>
+                * {{ margin: 0; padding: 0; box-sizing: border-box; }}
+                body {{
+                    font-family: 'Courier New', Courier, monospace;
+                    font-size: 11px;
+                    background: #f0f0f0;
+                    display: flex;
+                    justify-content: center;
+                    align-items: center;
+                    min-height: 100vh;
+                    padding: 20px;
+                }}
+                .recibo-container {{
+                    background: white;
+                    width: 210mm;
+                    padding: 15mm 12mm;
+                    box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+                    border-radius: 4px;
+                }}
+                @media print {{
+                    body {{ background: white; padding: 0; }}
+                    .recibo-container {{
+                        box-shadow: none;
+                        border-radius: 0;
+                        padding: 10mm 12mm;
+                        width: 100%;
+                    }}
+                    .no-print {{ display: none !important; }}
+                    .print-header {{ display: none !important; }}
+                }}
+                .print-header {{
+                    display: flex;
+                    justify-content: space-between;
+                    align-items: center;
+                    margin-bottom: 15px;
+                    padding-bottom: 10px;
+                    border-bottom: 1px solid #ddd;
+                }}
+                .btn-print {{
+                    background: #1a2a6c;
+                    color: white;
+                    border: none;
+                    padding: 8px 20px;
+                    border-radius: 4px;
+                    cursor: pointer;
+                    font-size: 12px;
+                    font-weight: 600;
+                }}
+                .btn-print:hover {{ background: #2d4373; }}
+                .btn-pdf {{
+                    background: #dc3545;
+                    color: white;
+                    border: none;
+                    padding: 8px 20px;
+                    border-radius: 4px;
+                    cursor: pointer;
+                    font-size: 12px;
+                    font-weight: 600;
+                    margin-left: 8px;
+                }}
+                .btn-pdf:hover {{ background: #c82333; }}
+                .header {{
+                    text-align: center;
+                    margin-bottom: 10px;
+                    padding-bottom: 8px;
+                    border-bottom: 2px solid #000;
+                }}
+                .header .title {{ font-size: 16px; font-weight: bold; }}
+                .header .subtitle {{ font-size: 12px; }}
+                .header .rif {{ font-size: 11px; color: #555; }}
+                .header .boleto {{ font-size: 13px; font-weight: bold; margin-top: 3px; }}
+                .header .status {{ display: inline-block; padding: 2px 12px; background: #28a745; color: white; border-radius: 3px; font-size: 10px; font-weight: bold; }}
+                .header .fecha-hora {{ font-size: 11px; color: #555; }}
+                .separator {{ border: none; border-top: 1px dashed #999; margin: 6px 0; }}
+                .section-title {{ font-weight: bold; font-size: 12px; margin: 8px 0 4px 0; }}
+                .section {{ margin-bottom: 6px; }}
+                .row {{ display: flex; justify-content: space-between; padding: 2px 0; }}
+                .row-label {{ font-weight: bold; }}
+                .table {{ width: 100%; border-collapse: collapse; margin: 4px 0; }}
+                .table th {{ border-bottom: 2px solid #000; padding: 4px 6px; text-align: left; font-size: 10px; }}
+                .table td {{ padding: 3px 6px; border-bottom: 1px solid #ddd; font-size: 10px; }}
+                .table .total-row td {{ border-top: 2px solid #000; font-weight: bold; }}
+                .table .total-row td:last-child {{ text-align: right; }}
+                .table .right {{ text-align: right; }}
+                .table .center {{ text-align: center; }}
+                .valores {{
+                    font-size: 10px;
+                    margin: 4px 0;
+                    padding: 4px 8px;
+                    background: #f8f9fa;
+                    border: 1px solid #ddd;
+                    border-radius: 3px;
+                }}
+                .valores .row {{ padding: 1px 0; }}
+                .declaracion {{
+                    font-size: 10px;
+                    margin: 8px 0;
+                    padding: 6px;
+                    border: 1px solid #ddd;
+                    border-radius: 3px;
+                    background: #fafafa;
+                }}
+                .firmas {{
+                    margin: 10px 0;
+                    display: flex;
+                    justify-content: space-between;
+                }}
+                .firmas .firma {{
+                    text-align: center;
+                    width: 45%;
+                }}
+                .firmas .linea {{
+                    border-top: 1px solid #000;
+                    width: 80%;
+                    margin: 20px auto 4px auto;
+                }}
+                .footer {{
+                    text-align: center;
+                    font-size: 9px;
+                    color: #888;
+                    margin-top: 8px;
+                    border-top: 2px solid #000;
+                    padding-top: 6px;
+                }}
+                .monto-bs {{
+                    font-weight: bold;
+                    color: #1a2a6c;
+                }}
+                .monto-descuento {{
+                    color: #dc3545;
+                }}
+                @media print {{
+                    .recibo-container {{
+                        padding: 8mm 10mm;
+                    }}
+                    .header .title {{ font-size: 14px; }}
+                    .btn-print, .btn-pdf {{ display: none !important; }}
+                }}
+                @page {{
+                    size: A4;
+                    margin: 0;
+                }}
+            </style>
+        </head>
+        <body>
+            <div class="recibo-container" id="recibo">
+                <div class="print-header no-print">
+                    <span style="font-weight: bold; font-size: 14px;">📄 Recibo de Cestaticket</span>
+                    <div>
+                        <button class="btn-print" onclick="window.print()">🖨️ Imprimir</button>
+                        <button class="btn-pdf" onclick="window.print()">📥 PDF</button>
+                    </div>
+                </div>
+
+                <div class="header">
+                    <div class="title">AGROAVICOLA DEL LLANO, C.A.</div>
+                    <div class="rif">RIF: {rif_empresa}</div>
+                    <div class="subtitle">RECIBO DE CESTATICKET</div>
+                    <div class="boleto">BOLETO: {numero_recibo}</div>
+                    <div style="display:flex; justify-content:space-between; margin-top:4px;">
+                        <span><span class="status">PAGADO</span></span>
+                        <span class="fecha-hora">Fecha: {fecha_actual}  Hora: {hora_actual}</span>
+                    </div>
+                    <div style="font-size:10px; color:#555; margin-top:2px;">PAGO DE CESTATICKET SOCIALISTA</div>
+                </div>
+
+                <hr class="separator">
+
+                <div class="section">
+                    <div class="section-title">EMPLEADO</div>
+                    <div class="row"><span class="row-label">NOMBRE:</span> <span>{nombre_completo}</span></div>
+                    <div class="row"><span class="row-label">C.I.:</span> <span>{cedula}</span></div>
+                    <div class="row"><span class="row-label">CARGO:</span> <span>{cargo}</span></div>
+                    <div class="row"><span class="row-label">FECHA INGRESO:</span> <span>{fecha_ingreso}</span></div>
+                    <div class="row"><span class="row-label">PERIODO:</span> <span>{fecha_inicio} al {fecha_fin}</span></div>
+                </div>
+
+                <hr class="separator">
+
+                <div class="section">
+                    <div class="section-title">DETALLE DEL PAGO</div>
+                    <table class="table">
+                        <thead>
+                            <tr>
+                                <th>CONCEPTO</th>
+                                <th style="text-align:center;">CANTIDAD</th>
+                                <th style="text-align:right;">MONTO Bs.</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td>CESTA TICKET SOCIALISTA</td>
+                                <td class="center">{dias_pagados} DÍAS</td>
+                                <td class="right monto-bs">{total_bs_formateado}</td>
+                            </tr>
+                            {f'<tr><td>(-) DESCUENTO POR FALTAS</td><td class="center">{faltas} DÍAS</td><td class="right monto-descuento">({descuento_bs_formateado})</td></tr>' if faltas > 0 else ''}
+                        </tbody>
+                        <tfoot>
+                            <tr class="total-row">
+                                <td colspan="2" style="text-align:right;">TOTAL A PAGAR:</td>
+                                <td class="right monto-bs">{total_bs_formateado}</td>
+                            </tr>
+                        </tfoot>
+                    </table>
+                </div>
+
+                <hr class="separator">
+
+                <div class="valores">
+                    <div class="row"><span class="row-label">VALOR POR DÍA (Bs.):</span> <span>{valor_diario_bs_formateado}</span></div>
+                    <div class="row"><span class="row-label">TASA BCV:</span> <span>{tasa_bcv_formateada}</span></div>
+                </div>
+
+                <hr class="separator">
+
+                <div class="declaracion">
+                    <div style="font-weight:bold; margin-bottom:4px;">DECLARACIÓN Y FIRMAS</div>
+                    <p>Declaro que he recibido el total indicado y recibo de conformidad
+                    con lo establecido en el Art. 30 del Reglamento de la Ley de
+                    Alimentación para los trabajadores y trabajadoras, declaro que
+                    he recibido de la empresa AGROAVICOLA DEL LLANO, C.A. las
+                    cantidades arriba descritas, a través de transferencia bancaria.</p>
+                </div>
+
+                <div class="firmas">
+                    <div class="firma">
+                        <div class="linea"></div>
+                        <div style="font-size:9px;">RECIBO CONFORME</div>
+                        <div style="font-size:9px; color:#555;">FIRMA, CÉDULA</div>
+                    </div>
+                    <div class="firma">
+                        <div class="linea"></div>
+                        <div style="font-size:9px;">SELLO HÚMEDO</div>
+                    </div>
+                </div>
+
+                <div style="text-align:center; margin:8px 0;">
+                    <div style="font-size:12px; font-weight:bold;">HUELLAS</div>
+                </div>
+
+                <div style="text-align:right; font-size:10px; margin-top:4px;">
+                    Fecha: {fecha_actual}
+                </div>
+
+                <div class="footer">
+                    FIN DEL RECIBO &nbsp;|&nbsp; LOTE: {lote_id} - ID: {id}
+                </div>
+            </div>
+
+            <script>
+                function imprimirRecibo() {{
+                    window.print();
+                }}
+                document.addEventListener('keydown', function(e) {{
+                    if ((e.ctrlKey || e.metaKey) && e.key === 'p') {{
+                        e.preventDefault();
+                        window.print();
+                    }}
+                }});
+            </script>
+        </body>
+        </html>
+        '''
+        
         return html, 200, {'Content-Type': 'text/html'}
+        
     except Exception as e:
-        print(f"❌ Error recibo HTML: {e}"); traceback.print_exc()
-        return f"<h1>Error</h1><p>{str(e)}</p>", 500
+        print(f"❌ Error generando recibo HTML: {e}")
+        import traceback
+        traceback.print_exc()
+        return f"<h1>Error al generar el recibo</h1><p>{str(e)}</p>", 500
 
 # ============================================
-# 🛑 RECIBO DE NÓMINA HTML (¡CORREGIDO AL 100%!)
+# 🛑 RECIBO DE NÓMINA HTML (SE MANTIENE CORRECTO)
 # ============================================
 @app.route('/api/recibo_nomina_html/<int:id_nomina>', methods=['GET'])
 @login_required
 def recibo_nomina_html(id_nomina):
-    """
-    Genera una vista HTML del recibo de Nómina para impresión en estilo Odoo.
-    ¡Se ha restaurado el código HTML completo para que no de error 500!
-    """
     try:
         conn = get_db_connection()
         if not conn:
@@ -1279,7 +1591,6 @@ def recibo_nomina_html(id_nomina):
         hora_actual = datetime.now().strftime("%H:%M:%S")
         numero_recibo = f"NOM-{lote_id}-{cedula}"
 
-        # 🔥 AQUÍ ESTABA EL ERROR: Faltaba generar la variable html
         html = f'''
         <!DOCTYPE html>
         <html lang="es">
@@ -1597,7 +1908,7 @@ def recibo_nomina_html(id_nomina):
         return f"<h1>Error al generar el recibo</h1><p>{str(e)}</p>", 500
 
 # ============================================
-# RECIBO CESTATICKET PARA MATRIZ DE PUNTO
+# RECIBO CESTATICKET PARA MATRIZ DE PUNTO (VERSIÓN TXT)
 # ============================================
 @app.route('/api/generar_recibo_cestaticket_matriz/<int:id>', methods=['GET'])
 @login_required
