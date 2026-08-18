@@ -118,10 +118,10 @@ def init_db():
             ('porcentaje_ivss', '0.04'),
             ('porcentaje_rpe', '0.005'),
             ('porcentaje_faov', '0.01'),
-            ('rif_empresa', 'J409876136'),
-            ('cuenta_empresa', '000102034732'),
-            ('nombre_cuenta_empresa', 'CODIZULCA'),
-            ('codigo_banco_defecto', 'BSCHVECA')
+            ('rif_empresa', ''),
+            ('cuenta_empresa', ''),
+            ('nombre_cuenta_empresa', ''),
+            ('codigo_banco_defecto', '')
         ]
         for clave, valor in parametros_default:
             cur.execute("INSERT INTO parametros (clave, valor) VALUES (%s, %s) ON CONFLICT (clave) DO UPDATE SET valor = EXCLUDED.valor", (clave, valor))
@@ -448,6 +448,9 @@ def eliminar_sucursal(id):
     except Exception as e: return jsonify({'error': str(e)}), 400
     finally: cur.close(); conn.close()
 
+# ============================================
+# 🚀 PARÁMETROS (CON DATOS DE EMPRESA VACÍOS)
+# ============================================
 @app.route('/api/parametros', methods=['GET'])
 @login_required
 def get_parametros():
@@ -455,8 +458,18 @@ def get_parametros():
     if not conn: return jsonify({})
     cur = conn.cursor()
     cur.execute("SELECT clave, valor FROM parametros")
-    rows = cur.fetchall(); cur.close(); conn.close()
-    return jsonify({row[0]: float(row[1]) if row[1].replace('.','',1).isdigit() else row[1] for row in rows})
+    rows = cur.fetchall()
+    cur.close(); conn.close()
+    params = {}
+    for row in rows:
+        clave = row[0]
+        valor = row[1]
+        # Forzamos que los datos de la empresa siempre lleguen vacíos
+        if clave in ['rif_empresa', 'cuenta_empresa', 'nombre_cuenta_empresa', 'codigo_banco_defecto']:
+            params[clave] = ''
+        else:
+            params[clave] = float(valor) if valor.replace('.','',1).isdigit() else valor
+    return jsonify(params)
 
 @app.route('/api/parametros', methods=['PUT'])
 @login_required
@@ -473,7 +486,8 @@ def actualizar_parametro():
         conn.commit()
         return jsonify({'mensaje': f'Parámetro "{clave}" actualizado exitosamente'})
     except Exception as e: return jsonify({'error': str(e)}), 400
-    finally: cur.close(); conn.close()
+    finally:
+        cur.close(); conn.close()
 
 @app.route('/api/actualizar_bcv', methods=['GET'])
 @login_required
@@ -880,16 +894,16 @@ def generar_archivo_cestaticket(lote_id):
         cur = conn.cursor()
         cur.execute("SELECT valor FROM parametros WHERE clave = 'rif_empresa'")
         row = cur.fetchone()
-        rif_empresa = str(row[0]) if row else "J409876136"
+        rif_empresa = str(row[0]) if row else ""
         cur.execute("SELECT valor FROM parametros WHERE clave = 'cuenta_empresa'")
         row = cur.fetchone()
-        cuenta_empresa = str(row[0]) if row else "000102034732"
+        cuenta_empresa = str(row[0]) if row else ""
         cur.execute("SELECT valor FROM parametros WHERE clave = 'nombre_cuenta_empresa'")
         row = cur.fetchone()
-        nombre_cuenta_empresa = str(row[0]) if row else "CODIZULCA"
+        nombre_cuenta_empresa = str(row[0]) if row else ""
         cur.execute("SELECT valor FROM parametros WHERE clave = 'codigo_banco_defecto'")
         row = cur.fetchone()
-        codigo_banco = str(row[0]) if row else "BSCHVECA"
+        codigo_banco = str(row[0]) if row else ""
 
         cur.execute('''
             SELECT 
@@ -971,16 +985,16 @@ def recibo_cestaticket_html(id):
             cur.close(); conn.close()
             return "<h1>Recibo no encontrado</h1><p>El ID del recibo no existe.</p>", 404
 
-        # Obtener parámetros de la empresa
+        # Obtener parámetros de la empresa (ya vienen vacíos)
         cur.execute("SELECT valor FROM parametros WHERE clave = 'rif_empresa'")
         rif_row = cur.fetchone()
-        rif_empresa = str(rif_row[0]) if rif_row else "J-505631349"
+        rif_empresa = str(rif_row[0]) if rif_row else ""
         cur.execute("SELECT valor FROM parametros WHERE clave = 'tasa_bcv'")
         tasa_row = cur.fetchone()
         tasa_bcv = float(tasa_row[0]) if tasa_row else 755.1552
         cur.execute("SELECT valor FROM parametros WHERE clave = 'nombre_cuenta_empresa'")
         cuenta_row = cur.fetchone()
-        nombre_cuenta = str(cuenta_row[0]) if cuenta_row else "AGROAVICOLA DEL LLANO, C.A"
+        nombre_cuenta = str(cuenta_row[0]) if cuenta_row else ""
         cur.close(); conn.close()
 
         # Asignar variables
@@ -1249,10 +1263,10 @@ def recibo_nomina_html(id_nomina):
 
         cur.execute("SELECT valor FROM parametros WHERE clave = 'rif_empresa'")
         rif_row = cur.fetchone()
-        rif_empresa = str(rif_row[0]) if rif_row else "J-505631349"
+        rif_empresa = str(rif_row[0]) if rif_row else ""
         cur.execute("SELECT valor FROM parametros WHERE clave = 'nombre_cuenta_empresa'")
         cuenta_row = cur.fetchone()
-        nombre_cuenta = str(cuenta_row[0]) if cuenta_row else "AGROAVICOLA DEL LLANO, C.A"
+        nombre_cuenta = str(cuenta_row[0]) if cuenta_row else ""
         cur.close(); conn.close()
 
         (id_nomina, id_empleado, fecha_inicio, fecha_fin, tipo, faltas_dias,
@@ -1488,16 +1502,16 @@ def generar_archivo_pago(lote_id):
     cur = conn.cursor()
     cur.execute("SELECT valor FROM parametros WHERE clave = 'rif_empresa'")
     row = cur.fetchone()
-    rif_empresa = str(row[0]) if row else "J409876136"
+    rif_empresa = str(row[0]) if row else ""
     cur.execute("SELECT valor FROM parametros WHERE clave = 'cuenta_empresa'")
     row = cur.fetchone()
-    cuenta_empresa = str(row[0]) if row else "000102034732"
+    cuenta_empresa = str(row[0]) if row else ""
     cur.execute("SELECT valor FROM parametros WHERE clave = 'nombre_cuenta_empresa'")
     row = cur.fetchone()
-    nombre_cuenta = str(row[0]) if row else "CODIZULCA"
+    nombre_cuenta = str(row[0]) if row else ""
     cur.execute("SELECT valor FROM parametros WHERE clave = 'codigo_banco_defecto'")
     row = cur.fetchone()
-    codigo_banco = str(row[0]) if row else "BSCHVECA"
+    codigo_banco = str(row[0]) if row else ""
 
     cur.execute('''
         SELECT 
