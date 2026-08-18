@@ -946,7 +946,7 @@ def generar_archivo_cestaticket(lote_id):
         return jsonify({'error': f'Error interno generando el archivo: {str(e)}'}), 500
 
 # ============================================
-# RECIBO CESTATICKET HTML (SOLO BOLÍVARES - FORMATO TICKET)
+# RECIBO CESTATICKET HTML (SOLO BOLÍVARES - FORMATO TICKET CON FIRMA)
 # ============================================
 @app.route('/api/recibo_cestaticket_html/<int:id>', methods=['GET'])
 @login_required
@@ -1032,6 +1032,7 @@ def recibo_cestaticket_html(id):
                 .table td {{ padding: 2px 1px; border-bottom: 1px dotted #ccc; }}
                 .table .total {{ border-top: 2px solid #000; font-weight: bold; }}
                 .footer {{ margin-top: 6px; border-top: 1px dashed #000; padding-top: 4px; font-size: 8px; text-align: center; }}
+                .signature {{ margin-top: 8px; border-top: 1px dashed #000; padding-top: 4px; display: flex; justify-content: space-between; font-size: 8px; }}
                 .right {{ text-align: right; }}
             </style>
         </head>
@@ -1057,6 +1058,10 @@ def recibo_cestaticket_html(id):
                 <tr><td>Descuento por Faltas</td><td class="right">- Bs. {fmt(descuento_bs)}</td></tr>
                 <tr class="total"><td><strong>TOTAL A PAGAR</strong></td><td class="right"><strong>Bs. {fmt(total_bs)}</strong></td></tr>
             </table>
+            <div class="signature">
+                <span>Firma del Empleado: _________________________</span>
+                <span>Fecha: ___/___/______</span>
+            </div>
             <div class="footer">
                 <p>Tasa BCV: Bs. {fmt(tasa_bcv)} | N° Recibo: {numero_recibo}</p>
                 <p>Sistema de Nómina Agroavícola del Llano</p>
@@ -1073,7 +1078,7 @@ def recibo_cestaticket_html(id):
         return f"<h1>Error</h1><p>{str(e)}</p>", 500
 
 # ============================================
-# GENERAR RECIBO CESTATICKET PDF (SOLO BOLÍVARES - FORMATO TICKET)
+# GENERAR RECIBO CESTATICKET PDF (SOLO BOLÍVARES - FORMATO TICKET CON FIRMA)
 # ============================================
 @app.route('/api/generar_recibo_cestaticket/<int:id>', methods=['GET'])
 @login_required
@@ -1116,12 +1121,11 @@ def generar_recibo_cestaticket(id):
         if total_bs == 0 and dias_pagados > 0:
             total_bs = dias_pagados * valor_diario_usd * tasa_bcv
 
-        # Formatear números con separador de miles y decimales
         def fmt(n):
             return f"{n:,.2f}".replace(",", ".")
 
         buffer = BytesIO()
-        doc = SimpleDocTemplate(buffer, pagesize=(80*mm, 150*mm),  # Tamaño ticket
+        doc = SimpleDocTemplate(buffer, pagesize=(80*mm, 160*mm),
                                 leftMargin=5*mm, rightMargin=5*mm,
                                 topMargin=5*mm, bottomMargin=5*mm)
         elements = []
@@ -1173,6 +1177,22 @@ def generar_recibo_cestaticket(id):
         elements.append(concept_table)
         elements.append(Spacer(1, 3*mm))
 
+        # Firma del empleado
+        firma_data = [
+            [Paragraph("Firma del Empleado: _________________________", normal_style),
+             Paragraph("Fecha: ___/___/______", normal_style)]
+        ]
+        firma_table = Table(firma_data, colWidths=[45*mm, 25*mm])
+        firma_table.setStyle(TableStyle([
+            ('FONTNAME', (0,0), (-1,-1), 'Helvetica'),
+            ('FONTSIZE', (0,0), (-1,-1), 8),
+            ('ALIGN', (0,0), (-1,-1), 'LEFT'),
+            ('BOTTOMPADDING', (0,0), (-1,-1), 2),
+            ('TOPPADDING', (0,0), (-1,-1), 2),
+        ]))
+        elements.append(firma_table)
+        elements.append(Spacer(1, 2*mm))
+
         # Pie
         footer_data = [
             [Paragraph(f"Tasa BCV: Bs. {fmt(tasa_bcv)}", normal_style)],
@@ -1198,7 +1218,7 @@ def generar_recibo_cestaticket(id):
         return jsonify({'error': str(e)}), 500
 
 # ============================================
-# RECIBO DE NÓMINA HTML (SOLO BOLÍVARES - FORMATO TICKET)
+# RECIBO DE NÓMINA HTML (SOLO BOLÍVARES - FORMATO TICKET CON FIRMA)
 # ============================================
 @app.route('/api/recibo_nomina_html/<int:id_nomina>', methods=['GET'])
 @login_required
@@ -1255,9 +1275,8 @@ def recibo_nomina_html(id_nomina):
         bono_comp_bs = bono_complementario_usd * tasa_bcv
         total_asignaciones_bs = total_asignaciones_usd * tasa_bcv
         total_deducciones_bs = total_deducciones_usd * tasa_bcv
-        neto_bs = neto_pagar_bs  # ya está en Bs
+        neto_bs = neto_pagar_bs
 
-        # Cálculo de descuento por faltas en Bs
         if tipo == 'Quincenal':
             salario_diario_bs = salario_base_bs / 11
         else:
@@ -1285,6 +1304,7 @@ def recibo_nomina_html(id_nomina):
                 .table td {{ padding: 2px 1px; border-bottom: 1px dotted #ccc; }}
                 .table .total {{ border-top: 2px solid #000; font-weight: bold; }}
                 .footer {{ margin-top: 6px; border-top: 1px dashed #000; padding-top: 4px; font-size: 7px; text-align: center; }}
+                .signature {{ margin-top: 8px; border-top: 1px dashed #000; padding-top: 4px; display: flex; justify-content: space-between; font-size: 8px; }}
                 .right {{ text-align: right; }}
             </style>
         </head>
@@ -1314,6 +1334,10 @@ def recibo_nomina_html(id_nomina):
                 <tr><td>Deducción FAOV (1%)</td><td class="right">- Bs. {fmt(faov_bs)}</td></tr>
                 <tr class="total"><td><strong>NETO A PAGAR</strong></td><td class="right"><strong>Bs. {fmt(neto_bs)}</strong></td></tr>
             </table>
+            <div class="signature">
+                <span>Firma del Empleado: _________________________</span>
+                <span>Fecha: ___/___/______</span>
+            </div>
             <div class="footer">
                 <p>Tasa BCV: Bs. {fmt(tasa_bcv)} | N° Recibo: NOM-{lote_id}-{cedula}</p>
                 <p>Sistema de Nómina Agroavícola del Llano</p>
