@@ -1445,6 +1445,12 @@ def manejar_lote(id):
                 'apellidos': r[18],
                 'cedula': r[19]
             })
+        # 🔥 CORRECCIÓN: Tasa de cambio = total_bs / total_usd (NO al revés)
+        if lote[3] and lote[4] and lote[3] > 0:
+            tasa_bcv = float(lote[4]) / float(lote[3])
+        else:
+            tasa_bcv = 755.1552  # fallback
+
         return jsonify({
             'id_lote': lote[0],
             'descripcion': lote[1],
@@ -1452,7 +1458,7 @@ def manejar_lote(id):
             'total_usd': float(lote[3]) if lote[3] else 0,
             'total_bs': float(lote[4]) if lote[4] else 0,
             'cantidad_empleados': lote[5],
-            'tasa_bcv': float(lote[3]) / float(lote[4]) if lote[4] and lote[3] else 755.1552,
+            'tasa_bcv': tasa_bcv,
             'nominas': nominas
         })
     elif request.method == 'DELETE':
