@@ -946,7 +946,7 @@ def generar_archivo_cestaticket(lote_id):
         return jsonify({'error': f'Error interno generando el archivo: {str(e)}'}), 500
 
 # ============================================
-# RECIBO CESTATICKET HTML (CORREGIDO)
+# RECIBO CESTATICKET HTML (SOLO BOLÍVARES - FORMATO TICKET)
 # ============================================
 @app.route('/api/recibo_cestaticket_html/<int:id>', methods=['GET'])
 @login_required
@@ -995,62 +995,72 @@ def recibo_cestaticket_html(id):
         dias_pagados = row[4] if row[4] else 0
         valor_diario_usd = float(row[5]) if row[5] else (40.0 / 30)
         tasa_bcv = float(row[6]) if row[6] else tasa_bcv
-        total_usd = float(row[7]) if row[7] else 0   # <-- DEFINIDA
+        total_usd = float(row[7]) if row[7] else 0
         total_bs = float(row[8]) if row[8] else 0
         lote_id = row[10]
 
-        # Cálculos adicionales
+        # Cálculos en bolívares
         valor_diario_bs = valor_diario_usd * tasa_bcv
-        faltas = 30 - dias_pagados
+        faltas = max(0, 30 - dias_pagados)
         descuento_bs = faltas * valor_diario_bs
         if total_bs == 0:
             total_bs = dias_pagados * valor_diario_bs
         if total_usd == 0:
             total_usd = dias_pagados * valor_diario_usd
 
-        fecha_actual = datetime.now().strftime("%d/%m/%Y")
-        hora_actual = datetime.now().strftime("%H:%M:%S")
+        fecha_actual = datetime.now().strftime("%d/%m/%Y %H:%M")
         numero_recibo = f"CESTA-{lote_id}-{cedula}"
 
         def fmt(n):
             return f"{n:,.2f}".replace(",", ".")
 
-        total_bs_formateado = fmt(total_bs)
-        descuento_bs_formateado = fmt(descuento_bs)
-        valor_diario_bs_formateado = fmt(valor_diario_bs)
-        tasa_bcv_formateada = fmt(tasa_bcv)
-
         html = f'''
         <!DOCTYPE html>
         <html>
-        <head><meta charset="UTF-8"><title>Recibo Cestaticket</title>
-        <style>
-            body{{font-family:Arial;padding:20px;}}
-            .recibo{{max-width:700px;margin:auto;border:1px solid #ccc;padding:20px;}}
-            .header{{text-align:center;border-bottom:2px solid #000;padding-bottom:10px;}}
-            .row{{display:flex;justify-content:space-between;padding:5px 0;}}
-            .table{{width:100%;border-collapse:collapse;margin:15px 0;}}
-            .table td{{padding:8px;border-bottom:1px solid #eee;}}
-            .total{{font-weight:bold;font-size:1.2em;}}
-            .footer{{margin-top:20px;border-top:1px solid #ccc;padding-top:10px;font-size:0.9em;}}
-        </style>
+        <head>
+            <meta charset="UTF-8">
+            <title>Recibo Cestaticket</title>
+            <style>
+                body {{ font-family: 'Courier New', monospace; margin: 0; padding: 5mm; background: #fff; }}
+                .ticket {{ max-width: 80mm; margin: auto; font-size: 10px; }}
+                .header {{ text-align: center; border-bottom: 1px dashed #000; padding-bottom: 4px; margin-bottom: 6px; }}
+                .header h2 {{ font-size: 12px; margin: 0; }}
+                .header p {{ margin: 2px 0; font-size: 9px; }}
+                .info {{ font-size: 9px; margin-bottom: 4px; }}
+                .info p {{ margin: 2px 0; }}
+                .table {{ width: 100%; border-collapse: collapse; font-size: 9px; }}
+                .table td {{ padding: 2px 1px; border-bottom: 1px dotted #ccc; }}
+                .table .total {{ border-top: 2px solid #000; font-weight: bold; }}
+                .footer {{ margin-top: 6px; border-top: 1px dashed #000; padding-top: 4px; font-size: 8px; text-align: center; }}
+                .right {{ text-align: right; }}
+            </style>
         </head>
         <body>
-        <div class="recibo">
-            <div class="header"><h2>{nombre_cuenta}</h2><p>RIF: {rif_empresa}</p><h3>RECIBO DE CESTATICKET</h3></div>
-            <div><p><strong>Empleado:</strong> {nombre_completo} <br><strong>Cédula:</strong> {cedula} <br><strong>Cargo:</strong> {cargo} <br><strong>Fecha Ingreso:</strong> {fecha_ingreso}</p></div>
-            <div><p><strong>Período:</strong> {fecha_inicio} al {fecha_fin} <br><strong>Fecha Emisión:</strong> {fecha_actual} {hora_actual}</p></div>
+        <div class="ticket">
+            <div class="header">
+                <h2>{nombre_cuenta}</h2>
+                <p>RIF: {rif_empresa}</p>
+                <p><strong>RECIBO DE CESTATICKET</strong></p>
+            </div>
+            <div class="info">
+                <p><strong>Empleado:</strong> {nombre_completo}</p>
+                <p><strong>Cédula:</strong> {cedula} | <strong>Cargo:</strong> {cargo}</p>
+                <p><strong>F.Ingreso:</strong> {fecha_ingreso}</p>
+                <p><strong>Período:</strong> {fecha_inicio} al {fecha_fin}</p>
+                <p><strong>Emisión:</strong> {fecha_actual}</p>
+            </div>
             <table class="table">
-                <tr><td><strong>Concepto</strong></td><td><strong>Valor</strong></td></tr>
-                <tr><td>Valor Mensual (Ley)</td><td>$40.00 USD</td></tr>
-                <tr><td>Días Pagados</td><td>{dias_pagados} días</td></tr>
-                <tr><td>Valor Diario</td><td>${valor_diario_usd:.4f} USD / Bs. {valor_diario_bs_formateado}</td></tr>
-                <tr><td>Faltas (días)</td><td>{faltas}</td></tr>
-                <tr><td>Descuento por Faltas</td><td>Bs. {descuento_bs_formateado}</td></tr>
-                <tr><td><strong>Total a Pagar (USD)</strong></td><td><strong>${total_usd:.2f}</strong></td></tr>
-                <tr><td><strong>Total a Pagar (Bs)</strong></td><td><strong>Bs. {total_bs_formateado}</strong></td></tr>
+                <tr><td>Valor Mensual (Ley)</td><td class="right">Bs. {fmt(40.0 * tasa_bcv)}</td></tr>
+                <tr><td>Días Pagados</td><td class="right">{dias_pagados} días</td></tr>
+                <tr><td>Valor Diario</td><td class="right">Bs. {fmt(valor_diario_bs)}</td></tr>
+                <tr><td>Faltas (días)</td><td class="right">{faltas}</td></tr>
+                <tr><td>Descuento por Faltas</td><td class="right">- Bs. {fmt(descuento_bs)}</td></tr>
+                <tr class="total"><td><strong>TOTAL A PAGAR</strong></td><td class="right"><strong>Bs. {fmt(total_bs)}</strong></td></tr>
             </table>
-            <div class="footer"><p><strong>Tasa BCV:</strong> Bs. {tasa_bcv_formateada} | <strong>N° Recibo:</strong> {numero_recibo}</p><p>Generado por Sistema de Nómina Agroavícola del Llano</p></div>
+            <div class="footer">
+                <p>Tasa BCV: Bs. {fmt(tasa_bcv)} | N° Recibo: {numero_recibo}</p>
+                <p>Sistema de Nómina Agroavícola del Llano</p>
+            </div>
         </div>
         </body>
         </html>
@@ -1063,7 +1073,7 @@ def recibo_cestaticket_html(id):
         return f"<h1>Error</h1><p>{str(e)}</p>", 500
 
 # ============================================
-# GENERAR RECIBO CESTATICKET PDF (CORREGIDO)
+# GENERAR RECIBO CESTATICKET PDF (SOLO BOLÍVARES - FORMATO TICKET)
 # ============================================
 @app.route('/api/generar_recibo_cestaticket/<int:id>', methods=['GET'])
 @login_required
@@ -1097,82 +1107,84 @@ def generar_recibo_cestaticket(id):
         dias_pagados = c[4]
         valor_diario_usd = float(c[5]) if c[5] else 0
         tasa_bcv = float(c[6]) if c[6] else 755.1552
-        total_usd = float(c[7]) if c[7] else 0   # <-- DEFINIDA
+        total_usd = float(c[7]) if c[7] else 0
         total_bs = float(c[8]) if c[8] else 0
         valor_mensual_usd = 40.0
 
         if total_usd == 0 and dias_pagados > 0:
             total_usd = dias_pagados * valor_diario_usd
+        if total_bs == 0 and dias_pagados > 0:
+            total_bs = dias_pagados * valor_diario_usd * tasa_bcv
+
+        # Formatear números con separador de miles y decimales
+        def fmt(n):
+            return f"{n:,.2f}".replace(",", ".")
 
         buffer = BytesIO()
-        doc = SimpleDocTemplate(buffer, pagesize=A4, leftMargin=20*mm, rightMargin=20*mm,
-                                topMargin=20*mm, bottomMargin=20*mm)
+        doc = SimpleDocTemplate(buffer, pagesize=(80*mm, 150*mm),  # Tamaño ticket
+                                leftMargin=5*mm, rightMargin=5*mm,
+                                topMargin=5*mm, bottomMargin=5*mm)
         elements = []
         styles = getSampleStyleSheet()
-        normal_style = ParagraphStyle(name='Normal', fontName='Helvetica', fontSize=9)
+        normal_style = ParagraphStyle(name='Normal', fontName='Helvetica', fontSize=8)
         bold_style = ParagraphStyle(name='Bold', parent=normal_style, fontName='Helvetica-Bold', fontSize=9)
-        title_style = ParagraphStyle(name='Title', fontSize=14, alignment=1, spaceAfter=10)
+        title_style = ParagraphStyle(name='Title', fontSize=11, alignment=1, spaceAfter=4)
 
-        logo_path = os.path.join(app.root_path, 'logo.png')
-        try:
-            logo = Image(logo_path)
-            logo.drawHeight = 1.2*inch
-            logo.drawWidth = 1.2*inch
-            logo_table_data = [[logo, Paragraph(f"<b>{descripcion}</b>", title_style)]]
-            logo_table = Table(logo_table_data, colWidths=[1.2*inch, 400])
-            logo_table.setStyle(TableStyle([
-                ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
-                ('ALIGN', (1,0), (1,0), 'RIGHT'),
-                ('BOTTOMPADDING', (0,0), (-1,-1), 10),
-            ]))
-            elements.append(logo_table)
-        except:
-            elements.append(Paragraph(f"<b>{descripcion}</b>", title_style))
+        # Título
+        elements.append(Paragraph(f"<b>RECIBO DE CESTATICKET</b>", title_style))
+        elements.append(Spacer(1, 2*mm))
 
-        header_data = [
-            [Paragraph(f"<b>Empleado:</b> {empleado_nombre}", normal_style), Paragraph(f"<b>Cédula:</b> {empleado_cedula}", normal_style)],
-            [Paragraph(f"<b>Cargo:</b> {cargo}", normal_style), Paragraph(f"<b>Período:</b> {fecha_inicio} a {fecha_fin}", normal_style)],
-            [Paragraph(f"<b>Tasa BCV:</b> Bs. {tasa_bcv:.4f}", normal_style), Paragraph(f"<b>Valor Mensual:</b> ${valor_mensual_usd:.2f}", normal_style)],
+        # Datos del empleado
+        info_data = [
+            [Paragraph(f"<b>Empleado:</b> {empleado_nombre}", normal_style)],
+            [Paragraph(f"<b>Cédula:</b> {empleado_cedula}  <b>Cargo:</b> {cargo}", normal_style)],
+            [Paragraph(f"<b>Período:</b> {fecha_inicio} al {fecha_fin}", normal_style)],
+            [Paragraph(f"<b>Emisión:</b> {datetime.now().strftime('%d/%m/%Y %H:%M')}", normal_style)],
         ]
-        header_table = Table(header_data, colWidths=[250, 250])
-        header_table.setStyle(TableStyle([
-            ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
-            ('BOTTOMPADDING', (0,0), (-1,-1), 6),
-        ]))
-        elements.append(header_table)
-        elements.append(Spacer(1, 10*mm))
-
-        concept_data = [
-            [Paragraph("<b>Concepto</b>", bold_style), Paragraph("<b>Valor</b>", bold_style)],
-            [Paragraph("Valor Mensual (Ley)", normal_style), Paragraph(f"${valor_mensual_usd:.2f} USD", normal_style)],
-            [Paragraph("Días Pagados", normal_style), Paragraph(f"{dias_pagados} días", normal_style)],
-            [Paragraph("Total a Pagar (USD)", normal_style), Paragraph(f"${total_usd:.2f}", normal_style)],
-            [Paragraph("Total a Pagar (Bs)", normal_style), Paragraph(f"Bs. {total_bs:.2f}", bold_style)],
-        ]
-        concept_table = Table(concept_data, colWidths=[220, 200])
-        concept_table.setStyle(TableStyle([
-            ('BACKGROUND', (0,0), (-1,0), colors.lightblue),
+        info_table = Table(info_data, colWidths=[70*mm])
+        info_table.setStyle(TableStyle([
             ('FONTNAME', (0,0), (-1,-1), 'Helvetica'),
-            ('ALIGN', (0,0), (0,-1), 'LEFT'),
-            ('ALIGN', (1,0), (1,-1), 'RIGHT'),
+            ('FONTSIZE', (0,0), (-1,-1), 8),
+            ('BOTTOMPADDING', (0,0), (-1,-1), 2),
+            ('TOPPADDING', (0,0), (-1,-1), 2),
+        ]))
+        elements.append(info_table)
+        elements.append(Spacer(1, 3*mm))
+
+        # Conceptos (solo bolívares)
+        concept_data = [
+            [Paragraph("<b>Concepto</b>", bold_style), Paragraph("<b>Bolívares</b>", bold_style)],
+            [Paragraph("Valor Mensual (Ley)", normal_style), Paragraph(f"Bs. {fmt(valor_mensual_usd * tasa_bcv)}", normal_style)],
+            [Paragraph(f"Días Pagados ({dias_pagados})", normal_style), Paragraph("", normal_style)],
+            [Paragraph("Valor Diario", normal_style), Paragraph(f"Bs. {fmt(valor_diario_usd * tasa_bcv)}", normal_style)],
+            [Paragraph(f"Faltas ({max(0, 30-dias_pagados)} días)", normal_style), Paragraph(f"- Bs. {fmt(max(0, 30-dias_pagados) * valor_diario_usd * tasa_bcv)}", normal_style)],
+            [Paragraph("<b>TOTAL A PAGAR</b>", bold_style), Paragraph(f"<b>Bs. {fmt(total_bs)}</b>", bold_style)],
+        ]
+        concept_table = Table(concept_data, colWidths=[50*mm, 25*mm])
+        concept_table.setStyle(TableStyle([
+            ('FONTNAME', (0,0), (-1,-1), 'Helvetica'),
+            ('FONTSIZE', (0,0), (-1,-1), 8),
             ('GRID', (0,0), (-1,-1), 0.5, colors.black),
-            ('BOTTOMPADDING', (0,0), (-1,-1), 6),
-            ('TOPPADDING', (0,0), (-1,-1), 6),
+            ('BACKGROUND', (0,0), (-1,0), colors.lightgrey),
+            ('ALIGN', (1,0), (1,-1), 'RIGHT'),
+            ('BOTTOMPADDING', (0,0), (-1,-1), 3),
+            ('TOPPADDING', (0,0), (-1,-1), 3),
         ]))
         elements.append(concept_table)
-        elements.append(Spacer(1, 10*mm))
+        elements.append(Spacer(1, 3*mm))
 
+        # Pie
         footer_data = [
-            [Paragraph("<b>Total Neto a Pagar (Bs):</b>", normal_style), Paragraph(f"<b>Bs. {total_bs:.2f}</b>", bold_style)],
-            [Paragraph("Generado por:", normal_style), Paragraph("Sistema de Nómina Agroavícola del Llano", normal_style)],
-            [Paragraph("Fecha de Emisión:", normal_style), Paragraph(datetime.now().strftime("%d/%m/%Y %H:%M"), normal_style)],
+            [Paragraph(f"Tasa BCV: Bs. {fmt(tasa_bcv)}", normal_style)],
+            [Paragraph(f"N° Recibo: CESTA-{c[10]}-{empleado_cedula}", normal_style)],
+            [Paragraph("Sistema de Nómina Agroavícola del Llano", normal_style)],
         ]
-        footer_table = Table(footer_data, colWidths=[170, 280])
+        footer_table = Table(footer_data, colWidths=[70*mm])
         footer_table.setStyle(TableStyle([
             ('FONTNAME', (0,0), (-1,-1), 'Helvetica'),
-            ('ALIGN', (0,0), (0,-1), 'LEFT'),
-            ('ALIGN', (1,0), (1,-1), 'RIGHT'),
-            ('BOTTOMPADDING', (0,0), (-1,-1), 5),
+            ('FONTSIZE', (0,0), (-1,-1), 7),
+            ('ALIGN', (0,0), (-1,-1), 'CENTER'),
+            ('BOTTOMPADDING', (0,0), (-1,-1), 1),
         ]))
         elements.append(footer_table)
 
@@ -1186,7 +1198,7 @@ def generar_recibo_cestaticket(id):
         return jsonify({'error': str(e)}), 500
 
 # ============================================
-# RECIBO DE NÓMINA HTML (SIMPLIFICADO)
+# RECIBO DE NÓMINA HTML (SOLO BOLÍVARES - FORMATO TICKET)
 # ============================================
 @app.route('/api/recibo_nomina_html/<int:id_nomina>', methods=['GET'])
 @login_required
@@ -1237,52 +1249,74 @@ def recibo_nomina_html(id_nomina):
         fecha_fin_str = fecha_fin.strftime("%d/%m/%Y") if fecha_fin else ''
         fecha_calculo_str = fecha_calculo.strftime("%d/%m/%Y") if fecha_calculo else datetime.now().strftime("%d/%m/%Y")
 
-        def fmt(n): return f"{n:,.2f}".replace(",", ".")
+        # Convertir todos los montos a bolívares
+        salario_base_bs = salario_base_usd * tasa_bcv
+        horas_extras_bs = horas_extras_usd * tasa_bcv
+        bono_comp_bs = bono_complementario_usd * tasa_bcv
+        total_asignaciones_bs = total_asignaciones_usd * tasa_bcv
+        total_deducciones_bs = total_deducciones_usd * tasa_bcv
+        neto_bs = neto_pagar_bs  # ya está en Bs
+
+        # Cálculo de descuento por faltas en Bs
+        if tipo == 'Quincenal':
+            salario_diario_bs = salario_base_bs / 11
+        else:
+            salario_diario_bs = salario_base_bs / 7
+        descuento_faltas_bs = faltas_dias * salario_diario_bs
+
+        def fmt(n):
+            return f"{n:,.2f}".replace(",", ".")
 
         html = f'''
         <!DOCTYPE html>
         <html>
-        <head><meta charset="UTF-8"><title>Recibo de Nómina</title>
-        <style>
-            body{{font-family:'Courier New',monospace;padding:20px;background:#f4f4f4;}}
-            .recibo{{max-width:750px;margin:auto;background:#fff;padding:30px;border:1px solid #ccc;box-shadow:0 0 10px rgba(0,0,0,0.1);}}
-            .header{{text-align:center;border-bottom:2px solid #000;padding-bottom:10px;margin-bottom:15px;}}
-            .info{{display:flex;justify-content:space-between;margin-bottom:10px;}}
-            .table{{width:100%;border-collapse:collapse;margin:15px 0;}}
-            .table td{{padding:8px;border-bottom:1px solid #eee;}}
-            .table tr:last-child td{{border-bottom:2px solid #000;}}
-            .right{{text-align:right;}}
-            .total{{font-weight:bold;font-size:1.1em;}}
-            .footer{{margin-top:20px;border-top:1px solid #ccc;padding-top:10px;font-size:0.9em;}}
-        </style>
+        <head>
+            <meta charset="UTF-8">
+            <title>Recibo de Nómina</title>
+            <style>
+                body {{ font-family: 'Courier New', monospace; margin: 0; padding: 5mm; background: #fff; }}
+                .ticket {{ max-width: 80mm; margin: auto; font-size: 9px; }}
+                .header {{ text-align: center; border-bottom: 1px dashed #000; padding-bottom: 4px; margin-bottom: 6px; }}
+                .header h2 {{ font-size: 11px; margin: 0; }}
+                .header p {{ margin: 2px 0; font-size: 8px; }}
+                .info {{ font-size: 8px; margin-bottom: 4px; }}
+                .info p {{ margin: 2px 0; }}
+                .table {{ width: 100%; border-collapse: collapse; font-size: 8px; }}
+                .table td {{ padding: 2px 1px; border-bottom: 1px dotted #ccc; }}
+                .table .total {{ border-top: 2px solid #000; font-weight: bold; }}
+                .footer {{ margin-top: 6px; border-top: 1px dashed #000; padding-top: 4px; font-size: 7px; text-align: center; }}
+                .right {{ text-align: right; }}
+            </style>
         </head>
         <body>
-        <div class="recibo">
+        <div class="ticket">
             <div class="header">
                 <h2>{nombre_cuenta}</h2>
                 <p>RIF: {rif_empresa}</p>
-                <h3>RECIBO DE NÓMINA</h3>
+                <p><strong>RECIBO DE NÓMINA</strong></p>
             </div>
             <div class="info">
-                <div><strong>Empleado:</strong> {nombre_completo}<br><strong>Cédula:</strong> {cedula}<br><strong>Cargo:</strong> {cargo}</div>
-                <div><strong>F. Ingreso:</strong> {fecha_ingreso_str}<br><strong>Período:</strong> {fecha_inicio_str} al {fecha_fin_str}<br><strong>Tipo:</strong> {tipo}</div>
+                <p><strong>Empleado:</strong> {nombre_completo}</p>
+                <p><strong>Cédula:</strong> {cedula} | <strong>Cargo:</strong> {cargo}</p>
+                <p><strong>F.Ingreso:</strong> {fecha_ingreso_str}</p>
+                <p><strong>Período:</strong> {fecha_inicio_str} al {fecha_fin_str}</p>
+                <p><strong>Tipo:</strong> {tipo} | <strong>Emisión:</strong> {fecha_calculo_str}</p>
             </div>
             <table class="table">
-                <tr><td><strong>Concepto</strong></td><td class="right"><strong>USD</strong></td><td class="right"><strong>Bolívares</strong></td></tr>
-                <tr><td>Salario Base Full</td><td class="right">${fmt(salario_base_usd)}</td><td class="right">Bs. {fmt(salario_base_usd * tasa_bcv)}</td></tr>
-                <tr><td>Horas Extras</td><td class="right">${fmt(horas_extras_usd)}</td><td class="right">Bs. {fmt(horas_extras_usd * tasa_bcv)}</td></tr>
-                <tr><td>Bono Complementario</td><td class="right">${fmt(bono_complementario_usd)}</td><td class="right">Bs. {fmt(bono_complementario_usd * tasa_bcv)}</td></tr>
-                <tr><td>Faltas (Días)</td><td class="right">- ${fmt(faltas_dias * (salario_base_usd / 11 if tipo=='Quincenal' else salario_base_usd / 7))}</td><td class="right">- Bs. {fmt(faltas_dias * (salario_base_usd / 11 if tipo=='Quincenal' else salario_base_usd / 7) * tasa_bcv)}</td></tr>
-                <tr><td><strong>Total Asignaciones</strong></td><td class="right"><strong>${fmt(total_asignaciones_usd)}</strong></td><td class="right"><strong>Bs. {fmt(total_asignaciones_usd * tasa_bcv)}</strong></td></tr>
-                <tr><td>Deducción IVSS (4%)</td><td class="right">- ${fmt(sso_usd)}</td><td class="right">- Bs. {fmt(sso_bs)}</td></tr>
-                <tr><td>Deducción RPE (0.5%)</td><td class="right">- ${fmt(rpe_usd)}</td><td class="right">- Bs. {fmt(rpe_bs)}</td></tr>
-                <tr><td>Deducción FAOV (1%)</td><td class="right">- ${fmt(faov_usd)}</td><td class="right">- Bs. {fmt(faov_bs)}</td></tr>
-                <tr><td><strong>Total Deducciones</strong></td><td class="right"><strong>- ${fmt(total_deducciones_usd)}</strong></td><td class="right"><strong>- Bs. {fmt(total_deducciones_usd * tasa_bcv)}</strong></td></tr>
-                <tr style="border-top:2px solid #000;"><td><strong>NETO A PAGAR</strong></td><td class="right"><strong>${fmt(neto_pagar_usd)}</strong></td><td class="right"><strong>Bs. {fmt(neto_pagar_bs)}</strong></td></tr>
+                <tr><td><strong>Concepto</strong></td><td class="right"><strong>Bolívares</strong></td></tr>
+                <tr><td>Salario Base</td><td class="right">Bs. {fmt(salario_base_bs)}</td></tr>
+                <tr><td>Horas Extras</td><td class="right">Bs. {fmt(horas_extras_bs)}</td></tr>
+                <tr><td>Bono Complementario</td><td class="right">Bs. {fmt(bono_comp_bs)}</td></tr>
+                <tr><td>Faltas ({faltas_dias} días)</td><td class="right">- Bs. {fmt(descuento_faltas_bs)}</td></tr>
+                <tr><td><strong>Total Asignaciones</strong></td><td class="right"><strong>Bs. {fmt(total_asignaciones_bs)}</strong></td></tr>
+                <tr><td>Deducción IVSS (4%)</td><td class="right">- Bs. {fmt(sso_bs)}</td></tr>
+                <tr><td>Deducción RPE (0.5%)</td><td class="right">- Bs. {fmt(rpe_bs)}</td></tr>
+                <tr><td>Deducción FAOV (1%)</td><td class="right">- Bs. {fmt(faov_bs)}</td></tr>
+                <tr class="total"><td><strong>NETO A PAGAR</strong></td><td class="right"><strong>Bs. {fmt(neto_bs)}</strong></td></tr>
             </table>
             <div class="footer">
-                <p><strong>Tasa BCV:</strong> Bs. {fmt(tasa_bcv)} | <strong>Lote:</strong> #{lote_id} | <strong>N° Recibo:</strong> NOM-{lote_id}-{cedula}</p>
-                <p><strong>Fecha Emisión:</strong> {fecha_calculo_str} - Generado por Sistema de Nómina</p>
+                <p>Tasa BCV: Bs. {fmt(tasa_bcv)} | N° Recibo: NOM-{lote_id}-{cedula}</p>
+                <p>Sistema de Nómina Agroavícola del Llano</p>
             </div>
         </div>
         </body>
