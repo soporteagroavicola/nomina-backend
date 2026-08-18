@@ -868,6 +868,9 @@ def manejar_lote_cestaticket(id):
         finally:
             cur.close(); conn.close()
 
+# ============================================
+# GENERADOR DE TXT Y PDF PARA CESTATICKET
+# ============================================
 @app.route('/api/generar_archivo_cestaticket/<int:lote_id>', methods=['GET'])
 @login_required
 def generar_archivo_cestaticket(lote_id):
@@ -942,12 +945,133 @@ def generar_archivo_cestaticket(lote_id):
         print(f"❌ Error generando archivo cestaticket: {e}")
         return jsonify({'error': f'Error interno generando el archivo: {str(e)}'}), 500
 
+# ============================================
+# RECIBO CESTATICKET HTML (CORREGIDO)
+# ============================================
+@app.route('/api/recibo_cestaticket_html/<int:id>', methods=['GET'])
+@login_required
+def recibo_cestaticket_html(id):
+    try:
+        conn = get_db_connection()
+        if not conn:
+            return "<h1>Error de conexión a la base de datos</h1>", 500
+        cur = conn.cursor()
+        cur.execute('''
+            SELECT 
+                c.id, c.id_empleado, c.fecha_inicio, c.fecha_fin, 
+                c.dias_pagados, c.valor_diario_usd, c.tasa_bcv, 
+                c.total_usd, c.total_bs, c.descripcion, c.lote_id,
+                e.nombres, e.apellidos, e.cedula, e.cargo, e.fecha_ingreso
+            FROM cestaticket_nominas c
+            JOIN empleados e ON c.id_empleado = e.id_empleado
+            WHERE c.id = %s
+        ''', (id,))
+        row = cur.fetchone()
+        if not row:
+            cur.close(); conn.close()
+            return "<h1>Recibo no encontrado</h1><p>El ID del recibo no existe.</p>", 404
+
+        # Obtener parámetros de la empresa
+        cur.execute("SELECT valor FROM parametros WHERE clave = 'rif_empresa'")
+        rif_row = cur.fetchone()
+        rif_empresa = str(rif_row[0]) if rif_row else "J-505631349"
+        cur.execute("SELECT valor FROM parametros WHERE clave = 'tasa_bcv'")
+        tasa_row = cur.fetchone()
+        tasa_bcv = float(tasa_row[0]) if tasa_row else 755.1552
+        cur.execute("SELECT valor FROM parametros WHERE clave = 'nombre_cuenta_empresa'")
+        cuenta_row = cur.fetchone()
+        nombre_cuenta = str(cuenta_row[0]) if cuenta_row else "AGROAVICOLA DEL LLANO, C.A"
+        cur.close(); conn.close()
+
+        # Asignar variables
+        nombres = row[11] or ''
+        apellidos = row[12] or ''
+        nombre_completo = f"{nombres} {apellidos}".strip()
+        cedula = row[13] or ''
+        cargo = row[14] or ''
+        fecha_ingreso = row[15].strftime("%d/%m/%Y") if row[15] else ''
+        fecha_inicio = row[2].strftime("%d/%m/%Y") if row[2] else ''
+        fecha_fin = row[3].strftime("%d/%m/%Y") if row[3] else ''
+        dias_pagados = row[4] if row[4] else 0
+        valor_diario_usd = float(row[5]) if row[5] else (40.0 / 30)
+        tasa_bcv = float(row[6]) if row[6] else tasa_bcv
+        total_usd = float(row[7]) if row[7] else 0   # <-- DEFINIDA
+        total_bs = float(row[8]) if row[8] else 0
+        lote_id = row[10]
+
+        # Cálculos adicionales
+        valor_diario_bs = valor_diario_usd * tasa_bcv
+        faltas = 30 - dias_pagados
+        descuento_bs = faltas * valor_diario_bs
+        if total_bs == 0:
+            total_bs = dias_pagados * valor_diario_bs
+        if total_usd == 0:
+            total_usd = dias_pagados * valor_diario_usd
+
+        fecha_actual = datetime.now().strftime("%d/%m/%Y")
+        hora_actual = datetime.now().strftime("%H:%M:%S")
+        numero_recibo = f"CESTA-{lote_id}-{cedula}"
+
+        def fmt(n):
+            return f"{n:,.2f}".replace(",", ".")
+
+        total_bs_formateado = fmt(total_bs)
+        descuento_bs_formateado = fmt(descuento_bs)
+        valor_diario_bs_formateado = fmt(valor_diario_bs)
+        tasa_bcv_formateada = fmt(tasa_bcv)
+
+        html = f'''
+        <!DOCTYPE html>
+        <html>
+        <head><meta charset="UTF-8"><title>Recibo Cestaticket</title>
+        <style>
+            body{{font-family:Arial;padding:20px;}}
+            .recibo{{max-width:700px;margin:auto;border:1px solid #ccc;padding:20px;}}
+            .header{{text-align:center;border-bottom:2px solid #000;padding-bottom:10px;}}
+            .row{{display:flex;justify-content:space-between;padding:5px 0;}}
+            .table{{width:100%;border-collapse:collapse;margin:15px 0;}}
+            .table td{{padding:8px;border-bottom:1px solid #eee;}}
+            .total{{font-weight:bold;font-size:1.2em;}}
+            .footer{{margin-top:20px;border-top:1px solid #ccc;padding-top:10px;font-size:0.9em;}}
+        </style>
+        </head>
+        <body>
+        <div class="recibo">
+            <div class="header"><h2>{nombre_cuenta}</h2><p>RIF: {rif_empresa}</p><h3>RECIBO DE CESTATICKET</h3></div>
+            <div><p><strong>Empleado:</strong> {nombre_completo} <br><strong>Cédula:</strong> {cedula} <br><strong>Cargo:</strong> {cargo} <br><strong>Fecha Ingreso:</strong> {fecha_ingreso}</p></div>
+            <div><p><strong>Período:</strong> {fecha_inicio} al {fecha_fin} <br><strong>Fecha Emisión:</strong> {fecha_actual} {hora_actual}</p></div>
+            <table class="table">
+                <tr><td><strong>Concepto</strong></td><td><strong>Valor</strong></td></tr>
+                <tr><td>Valor Mensual (Ley)</td><td>$40.00 USD</td></tr>
+                <tr><td>Días Pagados</td><td>{dias_pagados} días</td></tr>
+                <tr><td>Valor Diario</td><td>${valor_diario_usd:.4f} USD / Bs. {valor_diario_bs_formateado}</td></tr>
+                <tr><td>Faltas (días)</td><td>{faltas}</td></tr>
+                <tr><td>Descuento por Faltas</td><td>Bs. {descuento_bs_formateado}</td></tr>
+                <tr><td><strong>Total a Pagar (USD)</strong></td><td><strong>${total_usd:.2f}</strong></td></tr>
+                <tr><td><strong>Total a Pagar (Bs)</strong></td><td><strong>Bs. {total_bs_formateado}</strong></td></tr>
+            </table>
+            <div class="footer"><p><strong>Tasa BCV:</strong> Bs. {tasa_bcv_formateada} | <strong>N° Recibo:</strong> {numero_recibo}</p><p>Generado por Sistema de Nómina Agroavícola del Llano</p></div>
+        </div>
+        </body>
+        </html>
+        '''
+        return html, 200, {'Content-Type': 'text/html'}
+    except Exception as e:
+        print(f"❌ Error recibo HTML: {e}")
+        import traceback
+        traceback.print_exc()
+        return f"<h1>Error</h1><p>{str(e)}</p>", 500
+
+# ============================================
+# GENERAR RECIBO CESTATICKET PDF (CORREGIDO)
+# ============================================
 @app.route('/api/generar_recibo_cestaticket/<int:id>', methods=['GET'])
 @login_required
 def generar_recibo_cestaticket(id):
     try:
         conn = get_db_connection()
-        if not conn: return jsonify({'error': 'Error de conexión'}), 500
+        if not conn:
+            return jsonify({'error': 'Error de conexión'}), 500
         cur = conn.cursor()
         cur.execute('''
             SELECT 
@@ -960,25 +1084,29 @@ def generar_recibo_cestaticket(id):
         ''', (id,))
         row = cur.fetchone()
         cur.close(); conn.close()
-        if not row: return jsonify({'error': 'Cestaticket no encontrado'}), 404
+        if not row:
+            return jsonify({'error': 'Cestaticket no encontrado'}), 404
 
         c = row
         empleado_nombre = f"{c[11]} {c[12]}".strip()
         empleado_cedula = c[13]
         cargo = c[14]
         descripcion = c[9] or "Recibo de Cestaticket"
-        
         fecha_inicio = c[2].strftime("%d/%m/%Y") if c[2] else ''
         fecha_fin = c[3].strftime("%d/%m/%Y") if c[3] else ''
         dias_pagados = c[4]
         valor_diario_usd = float(c[5]) if c[5] else 0
-        tasa_bcv = float(c[6]) if c[6] else 0
-        total_usd = float(c[7]) if c[7] else 0
+        tasa_bcv = float(c[6]) if c[6] else 755.1552
+        total_usd = float(c[7]) if c[7] else 0   # <-- DEFINIDA
         total_bs = float(c[8]) if c[8] else 0
         valor_mensual_usd = 40.0
 
+        if total_usd == 0 and dias_pagados > 0:
+            total_usd = dias_pagados * valor_diario_usd
+
         buffer = BytesIO()
-        doc = SimpleDocTemplate(buffer, pagesize=A4, leftMargin=20*mm, rightMargin=20*mm, topMargin=20*mm, bottomMargin=20*mm)
+        doc = SimpleDocTemplate(buffer, pagesize=A4, leftMargin=20*mm, rightMargin=20*mm,
+                                topMargin=20*mm, bottomMargin=20*mm)
         elements = []
         styles = getSampleStyleSheet()
         normal_style = ParagraphStyle(name='Normal', fontName='Helvetica', fontSize=9)
@@ -1000,7 +1128,7 @@ def generar_recibo_cestaticket(id):
             elements.append(logo_table)
         except:
             elements.append(Paragraph(f"<b>{descripcion}</b>", title_style))
-        
+
         header_data = [
             [Paragraph(f"<b>Empleado:</b> {empleado_nombre}", normal_style), Paragraph(f"<b>Cédula:</b> {empleado_cedula}", normal_style)],
             [Paragraph(f"<b>Cargo:</b> {cargo}", normal_style), Paragraph(f"<b>Período:</b> {fecha_inicio} a {fecha_fin}", normal_style)],
@@ -1053,98 +1181,12 @@ def generar_recibo_cestaticket(id):
         return send_file(buffer, as_attachment=True, download_name=f"recibo_cestaticket_{id}.pdf", mimetype='application/pdf')
     except Exception as e:
         print(f"❌ Error fatal en generar_recibo_cestaticket: {e}")
-        return jsonify({'error': str(e)}), 500
-
-@app.route('/api/recibo_cestaticket_html/<int:id>', methods=['GET'])
-@login_required
-def recibo_cestaticket_html(id):
-    try:
-        conn = get_db_connection()
-        if not conn: return "<h1>Error de conexión a la base de datos</h1>", 500
-        cur = conn.cursor()
-        cur.execute('''
-            SELECT 
-                c.id, c.id_empleado, c.fecha_inicio, c.fecha_fin, 
-                c.dias_pagados, c.valor_diario_usd, c.tasa_bcv, 
-                c.total_usd, c.total_bs, c.descripcion, c.lote_id,
-                e.nombres, e.apellidos, e.cedula, e.cargo, e.fecha_ingreso
-            FROM cestaticket_nominas c
-            JOIN empleados e ON c.id_empleado = e.id_empleado
-            WHERE c.id = %s
-        ''', (id,))
-        row = cur.fetchone()
-        if not row:
-            cur.close(); conn.close()
-            return "<h1>Recibo no encontrado</h1><p>El ID del recibo no existe.</p>", 404
-
-        cur.execute("SELECT valor FROM parametros WHERE clave = 'rif_empresa'")
-        rif_row = cur.fetchone()
-        rif_empresa = str(rif_row[0]) if rif_row else "J-505631349"
-        cur.execute("SELECT valor FROM parametros WHERE clave = 'tasa_bcv'")
-        tasa_row = cur.fetchone()
-        tasa_bcv = float(tasa_row[0]) if tasa_row else 755.1552
-        cur.execute("SELECT valor FROM parametros WHERE clave = 'nombre_cuenta_empresa'")
-        cuenta_row = cur.fetchone()
-        nombre_cuenta = str(cuenta_row[0]) if cuenta_row else "AGROAVICOLA DEL LLANO, C.A"
-        cur.close(); conn.close()
-
-        nombres = row[11] or ''; apellidos = row[12] or ''
-        nombre_completo = f"{nombres} {apellidos}".strip()
-        cedula = row[13] or ''; cargo = row[14] or ''
-        fecha_ingreso = row[15].strftime("%d/%m/%Y") if row[15] else ''
-        fecha_inicio = row[2].strftime("%d/%m/%Y") if row[2] else ''
-        fecha_fin = row[3].strftime("%d/%m/%Y") if row[3] else ''
-        dias_pagados = row[4] if row[4] else 30
-        total_bs = float(row[8]) if row[8] else 0
-        lote_id = row[10]
-        valor_diario_usd = float(row[5]) if row[5] else (40.0 / 30)
-        valor_diario_bs = valor_diario_usd * tasa_bcv
-        faltas = 30 - dias_pagados
-        descuento_bs = faltas * valor_diario_bs
-        if total_bs == 0: total_bs = dias_pagados * valor_diario_bs
-        fecha_actual = datetime.now().strftime("%d/%m/%Y")
-        hora_actual = datetime.now().strftime("%H:%M:%S")
-        numero_recibo = f"CESTA-{lote_id}-{cedula}"
-        total_bs_formateado = f"{total_bs:,.2f}".replace(",", ".")
-        descuento_bs_formateado = f"{descuento_bs:,.2f}".replace(",", ".")
-        valor_diario_bs_formateado = f"{valor_diario_bs:,.2f}".replace(",", ".")
-        tasa_bcv_formateada = f"{tasa_bcv:,.4f}".replace(",", ".")
-
-        html = f'''
-        <!DOCTYPE html>
-        <html>
-        <head><meta charset="UTF-8"><title>Recibo Cestaticket</title>
-        <style>body{{font-family:Arial;padding:20px;}}.recibo{{max-width:700px;margin:auto;border:1px solid #ccc;padding:20px;}}.header{{text-align:center;border-bottom:2px solid #000;padding-bottom:10px;}}.row{{display:flex;justify-content:space-between;padding:5px 0;}}.table{{width:100%;border-collapse:collapse;margin:15px 0;}}.table td{{padding:8px;border-bottom:1px solid #eee;}}.total{{font-weight:bold;font-size:1.2em;}}.footer{{margin-top:20px;border-top:1px solid #ccc;padding-top:10px;font-size:0.9em;}}</style>
-        </head>
-        <body>
-        <div class="recibo">
-            <div class="header"><h2>{nombre_cuenta}</h2><p>RIF: {rif_empresa}</p><h3>RECIBO DE CESTATICKET</h3></div>
-            <div><p><strong>Empleado:</strong> {nombre_completo} <br><strong>Cédula:</strong> {cedula} <br><strong>Cargo:</strong> {cargo} <br><strong>Fecha Ingreso:</strong> {fecha_ingreso}</p></div>
-            <div><p><strong>Período:</strong> {fecha_inicio} al {fecha_fin} <br><strong>Fecha Emisión:</strong> {fecha_actual} {hora_actual}</p></div>
-            <table class="table">
-                <tr><td><strong>Concepto</strong></td><td><strong>Valor</strong></td></tr>
-                <tr><td>Valor Mensual (Ley)</td><td>$40.00 USD</td></tr>
-                <tr><td>Días Pagados</td><td>{dias_pagados} días</td></tr>
-                <tr><td>Valor Diario</td><td>${valor_diario_usd:.4f} USD / Bs. {valor_diario_bs_formateado}</td></tr>
-                <tr><td>Faltas (días)</td><td>{faltas}</td></tr>
-                <tr><td>Descuento por Faltas</td><td>Bs. {descuento_bs_formateado}</td></tr>
-                <tr><td><strong>Total a Pagar (USD)</strong></td><td><strong>${total_usd:.2f}</strong></td></tr>
-                <tr><td><strong>Total a Pagar (Bs)</strong></td><td><strong>Bs. {total_bs_formateado}</strong></td></tr>
-            </table>
-            <div class="footer"><p><strong>Tasa BCV:</strong> Bs. {tasa_bcv_formateada} | <strong>N° Recibo:</strong> {numero_recibo}</p><p>Generado por Sistema de Nómina Agroavícola del Llano</p></div>
-        </div>
-        </body>
-        </html>
-        '''
-        return html, 200, {'Content-Type': 'text/html'}
-    except Exception as e:
-        print(f"❌ Error recibo HTML: {e}")
         import traceback
         traceback.print_exc()
-        return f"<h1>Error</h1><p>{str(e)}</p>", 500
+        return jsonify({'error': str(e)}), 500
 
 # ============================================
-# RECIBO DE NÓMINA HTML (SIMPLIFICADO - SIN 60/40)
+# RECIBO DE NÓMINA HTML (SIMPLIFICADO)
 # ============================================
 @app.route('/api/recibo_nomina_html/<int:id_nomina>', methods=['GET'])
 @login_required
@@ -1568,7 +1610,7 @@ def reporte_pasivos():
         meses = (antiguedad.days % 365) // 30
         salario_mensual = float(emp[9]) if emp[9] else 0
         salario_diario = salario_mensual / 30
-        
+
         utilidades_dias = 15
         utilidades_usd = salario_diario * utilidades_dias
         aguinaldo_dias = 15
