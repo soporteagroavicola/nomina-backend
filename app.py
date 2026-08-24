@@ -136,7 +136,7 @@ def init_db():
                     activo BOOLEAN DEFAULT TRUE
                 )
             ''')
-            # Tabla lotes_nomina (con DECIMAL y más campos)
+            # Tabla lotes_nomina
             cur.execute('''
                 CREATE TABLE IF NOT EXISTS lotes_nomina (
                     id_lote SERIAL PRIMARY KEY,
@@ -153,7 +153,7 @@ def init_db():
                     created_at TIMESTAMP DEFAULT NOW()
                 )
             ''')
-            # Tabla nominas (con DECIMAL)
+            # Tabla nominas
             cur.execute('''
                 CREATE TABLE IF NOT EXISTS nominas (
                     id_nomina SERIAL PRIMARY KEY,
@@ -184,7 +184,7 @@ def init_db():
                     lote_id INTEGER REFERENCES lotes_nomina(id_lote)
                 )
             ''')
-            # Tabla usuarios (con roles)
+            # Tabla usuarios
             cur.execute('''
                 CREATE TABLE IF NOT EXISTS usuarios (
                     id SERIAL PRIMARY KEY,
@@ -196,7 +196,7 @@ def init_db():
                     created_at TIMESTAMP DEFAULT NOW()
                 )
             ''')
-            # Insertar admin por defecto si no existe
+            # Insertar admin por defecto
             cur.execute("SELECT id FROM usuarios WHERE username = 'admin'")
             if not cur.fetchone():
                 hashed = generate_password_hash('admin123')
@@ -205,7 +205,7 @@ def init_db():
                     ('admin', hashed)
                 )
 
-            # Tabla parametros (con DECIMAL)
+            # Tabla parametros
             cur.execute('''
                 CREATE TABLE IF NOT EXISTS parametros (
                     id SERIAL PRIMARY KEY,
@@ -215,7 +215,6 @@ def init_db():
                     fecha_actualizacion DATE
                 )
             ''')
-            # Insertar parámetros por defecto (incluyendo empresa)
             default_params = [
                 ('tasa_bcv', '755.1552', 'Tasa de cambio BCV'),
                 ('cestaticket_usd', '40.0', 'Valor mensual del cestaticket en USD'),
@@ -294,7 +293,6 @@ def login_required(f):
     def wrapper(*args, **kwargs):
         if 'user_id' not in session:
             return jsonify({'error': 'No autorizado'}), 401
-        # Inyectar datos del usuario en g
         user_id = session['user_id']
         with get_cursor(dict_cursor=True) as cur:
             cur.execute("SELECT username, rol FROM usuarios WHERE id = %s AND activo = TRUE", (user_id,))
@@ -322,11 +320,8 @@ def audit_action(tabla, accion):
     def decorator(f):
         @wraps(f)
         def wrapper(*args, **kwargs):
-            # Obtener datos anteriores si es actualización o eliminación
             datos_anteriores = None
             if accion in ('ACTUALIZAR', 'ELIMINAR'):
-                # Intentar obtener el registro antes de la operación
-                # Esto requiere que el endpoint tenga un parámetro 'id' en kwargs
                 registro_id = kwargs.get('id')
                 if registro_id:
                     try:
@@ -337,13 +332,8 @@ def audit_action(tabla, accion):
                                 datos_anteriores = json.dumps(dict(row), default=str)
                     except Exception as e:
                         logger.warning(f"No se pudo obtener datos previos para auditoría: {e}")
-
-            # Ejecutar la función
             response = f(*args, **kwargs)
-
-            # Si la respuesta es exitosa, registrar auditoría
             if response and hasattr(response, 'status_code') and response.status_code < 400:
-                # Obtener el ID del registro (si existe en kwargs o en la respuesta)
                 registro_id = kwargs.get('id')
                 if not registro_id and hasattr(response, 'json'):
                     try:
@@ -352,8 +342,6 @@ def audit_action(tabla, accion):
                             registro_id = data['id']
                     except:
                         pass
-
-                # Obtener nuevos datos (si es creación o actualización)
                 datos_nuevos = None
                 if accion in ('CREAR', 'ACTUALIZAR'):
                     try:
@@ -361,7 +349,6 @@ def audit_action(tabla, accion):
                             datos_nuevos = json.dumps(request.json, default=str)
                     except:
                         pass
-
                 try:
                     with get_cursor(commit=True) as cur:
                         cur.execute('''
@@ -375,7 +362,6 @@ def audit_action(tabla, accion):
                         ))
                 except Exception as e:
                     logger.error(f"Error al registrar auditoría: {e}")
-
             return response
         return wrapper
     return decorator
@@ -402,9 +388,7 @@ def validate_dates(fecha_inicio, fecha_fin):
     except ValueError:
         raise ValidationError("Formato de fecha inválido. Use YYYY-MM-DD")
 
-# ================== SERVICIOS (LÓGICA DE NEGOCIO) ==================
-
-# ---------- Parámetros ----------
+# ================== SERVICIOS ==================
 def get_param(clave, default=None):
     with get_cursor() as cur:
         cur.execute("SELECT valor FROM parametros WHERE clave = %s", (clave,))
@@ -412,7 +396,6 @@ def get_param(clave, default=None):
         if not row:
             return default
         valor = row[0]
-        # Intentar convertir a Decimal si es numérico
         try:
             return Decimal(valor)
         except:
@@ -437,14 +420,12 @@ def update_param(clave, valor, usuario):
             "UPDATE parametros SET valor = %s, fecha_actualizacion = CURRENT_DATE WHERE clave = %s",
             (str(valor), clave)
         )
-        # Auditoría manual para parámetros (o usar decorador)
         cur.execute('''
             INSERT INTO audit_log (tabla, registro_id, accion, usuario, datos_nuevos, ip_address)
             VALUES (%s, %s, %s, %s, %s, %s)
         ''', ('parametros', None, 'ACTUALIZAR', usuario, json.dumps({clave: str(valor)}), request.remote_addr)
         )
 
-# ---------- Empleados ----------
 def get_empleados(search='', sucursal_id=None, tipo_pago=None, activo=True, limit=100, offset=0):
     with get_cursor(dict_cursor=True) as cur:
         query = "SELECT * FROM empleados WHERE activo = %s"
@@ -472,7 +453,6 @@ def get_empleado_by_id(id):
 def create_empleado(data, usuario):
     cedula = validate_cedula(data.get('cedula', ''))
     with get_cursor(commit=True) as cur:
-        # Verificar duplicado
         cur.execute("SELECT id_empleado FROM empleados WHERE cedula = %s", (cedula,))
         if cur.fetchone():
             raise ValidationError("Ya existe un empleado con esa cédula")
@@ -528,17 +508,15 @@ def delete_empleado(id, usuario):
 
 # ---------- Cálculo de Nómina ----------
 def calcular_dias_habiles(inicio, fin):
-    """Retorna número de días hábiles (lunes a viernes) entre dos fechas inclusive"""
     total = 0
     current = inicio
     while current <= fin:
-        if current.weekday() < 5:  # 0=lunes, 6=domingo
+        if current.weekday() < 5:
             total += 1
         current += timedelta(days=1)
     return total
 
 def calcular_periodo(tipo, fecha_ref=None):
-    """Calcula inicio y fin del período según tipo y fecha de referencia"""
     if fecha_ref is None:
         fecha_ref = datetime.now().date()
     if tipo == 'Quincenal':
@@ -547,31 +525,24 @@ def calcular_periodo(tipo, fecha_ref=None):
             start = datetime(year, month, 1).date()
             end = datetime(year, month, 15).date()
         else:
-            # Último día del mes
             if month == 12:
                 next_month = datetime(year+1, 1, 1).date()
             else:
                 next_month = datetime(year, month+1, 1).date()
             end = next_month - timedelta(days=1)
             start = datetime(year, month, 16).date()
-    else:  # Semanal
-        # Lunes a domingo de la semana actual
-        start = fecha_ref - timedelta(days=fecha_ref.weekday())  # Lunes
-        end = start + timedelta(days=6)  # Domingo
+    else:
+        start = fecha_ref - timedelta(days=fecha_ref.weekday())
+        end = start + timedelta(days=6)
     return start, end
 
 def procesar_empleado(emp, tipo, fecha_inicio, fecha_fin, faltas, horas, valor_hora, bono, salario_override, aplicar_deducciones):
-    """Procesa un empleado y devuelve el cálculo completo usando Decimal"""
-    # Obtener salario base (60%)
     salario_mensual = Decimal(str(emp['salario_mensual_usd'])) if emp['salario_mensual_usd'] else Decimal('0')
     if salario_override:
         salario_mensual = Decimal(str(salario_override))
-
     salario_diario = salario_mensual / Decimal('30')
     salario_diario_incidencia = salario_mensual * Decimal('0.60') / Decimal('30')
     total_horas_extras = Decimal(str(horas)) * Decimal(str(valor_hora))
-
-    # Calcular días del período
     if tipo == 'Quincenal':
         base = salario_mensual / Decimal('2')
         dias_teoricos_trabajo = 11
@@ -580,21 +551,13 @@ def procesar_empleado(emp, tipo, fecha_inicio, fecha_fin, faltas, horas, valor_h
         base = salario_diario * Decimal('7')
         dias_teoricos_trabajo = 7
         dias_descanso = 2
-
-    # Aplicar faltas
     faltas = int(faltas) if faltas else 0
     descuento_faltas = Decimal(faltas) * salario_diario
     salario_base_ajustado = base - descuento_faltas
-
-    # Bonos
-    bono_fijo = Decimal(str(emp.get('bono_fijo_usd', 0)))  # 40% fijo del empleado
-    bono_adicional = Decimal(str(bono))  # lo que el usuario ingresa en el campo "Bono"
+    bono_fijo = Decimal(str(emp.get('bono_fijo_usd', 0)))
+    bono_adicional = Decimal(str(bono))
     total_bonos = bono_fijo + bono_adicional
-
-    # Total asignaciones
     total_asignaciones = salario_base_ajustado + total_horas_extras + total_bonos
-
-    # Deducciones
     if aplicar_deducciones:
         ivss = total_asignaciones * IVSS_PCT
         rpe = total_asignaciones * RPE_PCT
@@ -602,13 +565,10 @@ def procesar_empleado(emp, tipo, fecha_inicio, fecha_fin, faltas, horas, valor_h
         total_deducciones = ivss + rpe + faov
     else:
         ivss = rpe = faov = total_deducciones = Decimal('0')
-
     neto_usd = total_asignaciones - total_deducciones
     tasa_bcv = get_param('tasa_bcv', Decimal('755.1552'))
     neto_bs = neto_usd * tasa_bcv
-
     dias_reales_trabajados = max(0, dias_teoricos_trabajo - faltas)
-
     return {
         'salario_base_full_usd': base,
         'salario_base_ajustado_usd': salario_base_ajustado,
@@ -636,7 +596,6 @@ def procesar_empleado(emp, tipo, fecha_inicio, fecha_fin, faltas, horas, valor_h
     }
 
 def calcular_y_guardar_nomina(data, usuario):
-    """Orquesta el cálculo y guardado de la nómina"""
     tipo = data.get('tipo', 'Quincenal')
     fecha_inicio = data.get('fecha_inicio')
     fecha_fin = data.get('fecha_fin')
@@ -653,9 +612,7 @@ def calcular_y_guardar_nomina(data, usuario):
         raise ValidationError("Faltan datos: fechas o empleados")
 
     start, end = validate_dates(fecha_inicio, fecha_fin)
-
     tasa_bcv = get_param('tasa_bcv', Decimal('755.1552'))
-
     resultados = []
     total_usd_lote = Decimal('0')
     total_bs_lote = Decimal('0')
@@ -686,7 +643,6 @@ def calcular_y_guardar_nomina(data, usuario):
     lote_id = None
     if guardar_en_bd:
         with get_cursor(commit=True) as cur:
-            # Insertar lote
             cur.execute('''
                 INSERT INTO lotes_nomina (
                     descripcion, fecha_calculo, fecha_inicio, fecha_fin,
@@ -702,7 +658,6 @@ def calcular_y_guardar_nomina(data, usuario):
             ))
             lote_id = cur.fetchone()[0]
 
-            # Insertar cada nómina
             for emp, calc in zip(empleados, resultados):
                 cur.execute('''
                     INSERT INTO nominas (
@@ -736,7 +691,6 @@ def calcular_y_guardar_nomina(data, usuario):
                     descripcion, lote_id
                 ))
 
-        # Auditoría de la nómina (manual)
         with get_cursor(commit=True) as cur:
             cur.execute('''
                 INSERT INTO audit_log (tabla, registro_id, accion, usuario, datos_nuevos, ip_address)
@@ -758,15 +712,12 @@ def get_dashboard_stats():
     month_start = today.replace(day=1)
 
     with get_cursor(dict_cursor=True) as cur:
-        # Total empleados activos
         cur.execute("SELECT COUNT(*) as total FROM empleados WHERE activo = TRUE")
         stats['total_empleados'] = cur.fetchone()['total']
 
-        # Desglose por tipo de pago
         cur.execute("SELECT tipo_pago, COUNT(*) as count FROM empleados WHERE activo = TRUE GROUP BY tipo_pago")
         stats['empleados_por_tipo'] = {row['tipo_pago']: row['count'] for row in cur.fetchall()}
 
-        # Pagos del mes actual
         cur.execute('''
             SELECT COALESCE(SUM(total_usd), 0) as total_usd, COALESCE(SUM(total_bs), 0) as total_bs
             FROM lotes_nomina
@@ -776,7 +727,6 @@ def get_dashboard_stats():
         stats['pagos_mes_usd'] = row['total_usd'] if row else 0
         stats['pagos_mes_bs'] = row['total_bs'] if row else 0
 
-        # Cestaticket del mes
         cur.execute('''
             SELECT COALESCE(SUM(total_bs), 0) as total_bs
             FROM cestaticket_lotes
@@ -785,7 +735,6 @@ def get_dashboard_stats():
         row = cur.fetchone()
         stats['cestaticket_mes_bs'] = row['total_bs'] if row else 0
 
-        # Última nómina
         cur.execute('''
             SELECT id_lote, descripcion, fecha_calculo, total_usd, total_bs
             FROM lotes_nomina
@@ -794,7 +743,6 @@ def get_dashboard_stats():
         ''')
         stats['ultima_nomina'] = cur.fetchone()
 
-        # Distribución por sucursal
         cur.execute('''
             SELECT s.nombre, COUNT(e.id_empleado) as total
             FROM sucursales s
@@ -809,9 +757,7 @@ def get_dashboard_stats():
 
 # ---------- Generación de TXT bancario ----------
 def generar_txt_provision(lote_id, tipo='100'):
-    """Genera el archivo TXT bancario para el lote especificado"""
     with get_cursor(dict_cursor=True) as cur:
-        # Obtener parámetros de empresa
         params = {}
         for clave in ['rif_empresa', 'cuenta_empresa', 'nombre_cuenta_empresa', 'codigo_banco_defecto']:
             cur.execute("SELECT valor FROM parametros WHERE clave = %s", (clave,))
@@ -823,7 +769,6 @@ def generar_txt_provision(lote_id, tipo='100'):
         nombre_cuenta = params['nombre_cuenta_empresa'].strip().upper()
         codigo_banco = params['codigo_banco_defecto'].strip()
 
-        # Obtener nóminas del lote con datos de empleados
         cur.execute('''
             SELECT 
                 e.cedula, e.cuenta_bancaria, e.nombres, e.apellidos,
@@ -839,13 +784,11 @@ def generar_txt_provision(lote_id, tipo='100'):
         if not rows:
             raise ValidationError("No hay empleados con cuenta bancaria en este lote")
 
-        # Calcular montos según tipo
         fecha_ejecucion = datetime.now().strftime("%d/%m/%Y")
         buffer = StringIO()
         total_count = len(rows)
         total_amount = Decimal('0')
 
-        # HEADER
         header = f"HEADER  {total_count:08d}0011853{rif_empresa:<10}{fecha_ejecucion}{fecha_ejecucion}"
         buffer.write(header + "\n")
 
@@ -865,7 +808,6 @@ def generar_txt_provision(lote_id, tipo='100'):
             else:
                 monto = neto_usd
 
-            # Convertir a bolívares usando la tasa del lote (si no, usar la actual)
             if neto_usd > 0:
                 tasa = neto_bs / neto_usd
             else:
@@ -873,25 +815,20 @@ def generar_txt_provision(lote_id, tipo='100'):
             monto_bs = monto * tasa
             total_amount += monto_bs
 
-            # Formatear monto con coma decimal y 16 dígitos totales
             monto_str = f"{monto_bs:016.2f}".replace('.', ',')
 
-            # DEBITO
             debit = (f"DEBITO  {i:08d}{rif_empresa:<10}{nombre_cuenta:<30}"
                      f"{fecha_ejecucion}{cuenta_empresa:<12}00000487092{monto_str:<21}VEB40 ")
-            # CREDITO
             credit = (f"CREDITO {i:08d}{cedula:<10}{nombre:<29}"
                       f"{cuenta_empleado:<22}{monto_str:<21}00{banco_codigo:<8}")
 
             buffer.write(debit + "\n")
             buffer.write(credit + "\n")
 
-        # TOTAL
         total_amount_str = f"{total_amount:015.2f}".replace('.', ',')
         total_line = f"TOTAL   {total_count:05d}{total_count:05d}{total_amount_str:<18}"
         buffer.write(total_line + "\n")
 
-        # Codificar a cp1252 para compatibilidad bancaria
         mem = BytesIO()
         mem.write(buffer.getvalue().encode('cp1252', errors='replace'))
         mem.seek(0)
@@ -924,7 +861,6 @@ def login():
         session['username'] = username
         session.permanent = True
 
-        # Actualizar último login
         cur.execute("UPDATE usuarios SET last_login = NOW() WHERE id = %s", (user['id'],))
         return jsonify({'mensaje': 'Login exitoso', 'username': username, 'rol': user['rol']})
 
@@ -950,7 +886,6 @@ def check_auth():
 def dashboard():
     try:
         stats = get_dashboard_stats()
-        # Convertir Decimal a float para JSON
         def convert_decimal(obj):
             if isinstance(obj, Decimal):
                 return float(obj)
@@ -1056,7 +991,6 @@ def delete_sucursal(id):
 def get_parametros():
     try:
         params = get_param_all()
-        # Convertir Decimal a float para JSON
         def convert(obj):
             if isinstance(obj, Decimal):
                 return float(obj)
@@ -1099,9 +1033,7 @@ def actualizar_bcv():
 def calcular_nomina():
     try:
         data = request.json
-        # Asegurar que los montos se manejen como Decimal
         result = calcular_y_guardar_nomina(data, g.username)
-        # Convertir Decimal a float para JSON
         def convert(obj):
             if isinstance(obj, Decimal):
                 return float(obj)
@@ -1137,7 +1069,6 @@ def get_lotes():
         query += " GROUP BY l.id_lote ORDER BY l.fecha_calculo DESC, l.id_lote DESC"
         cur.execute(query, params)
         lotes = cur.fetchall()
-        # Convertir Decimal a float
         for l in lotes:
             for k in ['total_usd', 'total_bs', 'tasa_bcv']:
                 if k in l and l[k] is not None:
@@ -1167,7 +1098,6 @@ def manejar_lote(id):
                 WHERE n.lote_id = %s
             ''', (id,))
             nominas = cur.fetchall()
-            # Convertir Decimal a float
             for n in nominas:
                 for k in ['salario_base_usd', 'horas_extras_usd', 'bono_complementario_usd',
                           'bono_adicional_usd', 'total_asignaciones_usd', 'total_deducciones_usd',
@@ -1187,7 +1117,7 @@ def manejar_lote(id):
                 'tasa_bcv': lote['tasa_bcv'],
                 'nominas': nominas
             })
-    else:  # DELETE
+    else:
         with get_cursor(commit=True) as cur:
             cur.execute("DELETE FROM nominas WHERE lote_id = %s", (id,))
             cur.execute("DELETE FROM lotes_nomina WHERE id_lote = %s", (id,))
@@ -1213,11 +1143,10 @@ def generar_archivo_pago(lote_id):
         return jsonify({'error': str(e)}), 500
 
 # ---------- Cestaticket ----------
-# (Mantener las rutas existentes de cestaticket con las mejoras de Decimal)
-# Aquí van las rutas de cestaticket (las mismas que antes pero con Decimal)
-# Por brevedad, asumo que ya están en el código original y solo se ajustan los tipos.
+# (Se mantienen las rutas existentes de cestaticket, se asume que ya están en el código)
+# Por brevedad, se omiten pero deberían estar en tu archivo original.
 
-# ---------- Usuarios (Administración) ----------
+# ---------- Usuarios ----------
 @app.route('/api/usuarios', methods=['GET'])
 @login_required
 @admin_required
@@ -1295,8 +1224,7 @@ def cambiar_password():
         return jsonify({'mensaje': 'Contraseña actualizada'})
 
 # ---------- Reportes ----------
-# (Mantener rutas de reportes con mejoras de Decimal)
-# Similar a lo que ya existe, pero usando Decimal en cálculos.
+# (Se mantienen las rutas de reportes, se asume que ya están en el código)
 
 # ---------- Error Handlers ----------
 @app.errorhandler(ValidationError)
