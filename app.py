@@ -13,11 +13,6 @@ import requests
 from flask import Flask, request, jsonify, session, g, send_file
 from flask_cors import CORS
 from werkzeug.security import generate_password_hash, check_password_hash
-from reportlab.lib.pagesizes import A4
-from reportlab.lib.units import mm
-from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
-from reportlab.lib import colors
 
 # ---------- CONFIGURACIÓN ----------
 app = Flask(__name__)
@@ -47,7 +42,7 @@ CORS(app, origins=frontend_urls, supports_credentials=True,
      expose_headers=["Content-Type", "Authorization"],
      methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"])
 
-# ---------- CONSTANTES ----------
+# ---------- CONSTANTES (LOTTT) ----------
 IVSS = Decimal('0.04')
 RPE = Decimal('0.005')
 FAOV = Decimal('0.01')
@@ -84,10 +79,11 @@ def get_cursor(commit=False, dict_cursor=False):
         cur.close()
         conn.close()
 
-# ---------- INICIALIZACIÓN ----------
+# ---------- INICIALIZACIÓN (MIGRACIÓN AUTOMÁTICA) ----------
 def init_db():
     try:
         with get_cursor(commit=True) as cur:
+            # Tabla empleados (con banco_codigo y tipo DECIMAL)
             cur.execute('''
                 CREATE TABLE IF NOT EXISTS empleados (
                     id_empleado SERIAL PRIMARY KEY,
@@ -113,6 +109,7 @@ def init_db():
                     updated_at TIMESTAMP DEFAULT NOW()
                 )
             ''')
+            # Tabla sucursales
             cur.execute('''
                 CREATE TABLE IF NOT EXISTS sucursales (
                     id_sucursal SERIAL PRIMARY KEY,
@@ -120,6 +117,7 @@ def init_db():
                     activo BOOLEAN DEFAULT TRUE
                 )
             ''')
+            # Tabla lotes_nomina (con created_by, tasa_bcv, fechas)
             cur.execute('''
                 CREATE TABLE IF NOT EXISTS lotes_nomina (
                     id_lote SERIAL PRIMARY KEY,
@@ -136,6 +134,7 @@ def init_db():
                     created_at TIMESTAMP DEFAULT NOW()
                 )
             ''')
+            # Tabla nominas (con lote_id FK y campos DECIMAL)
             cur.execute('''
                 CREATE TABLE IF NOT EXISTS nominas (
                     id_nomina SERIAL PRIMARY KEY,
@@ -166,6 +165,7 @@ def init_db():
                     lote_id INTEGER REFERENCES lotes_nomina(id_lote)
                 )
             ''')
+            # Tabla usuarios (con rol y activo)
             cur.execute('''
                 CREATE TABLE IF NOT EXISTS usuarios (
                     id SERIAL PRIMARY KEY,
@@ -177,6 +177,7 @@ def init_db():
                     created_at TIMESTAMP DEFAULT NOW()
                 )
             ''')
+            # Usuario admin por defecto
             cur.execute("SELECT id FROM usuarios WHERE username = 'admin'")
             if not cur.fetchone():
                 hashed = generate_password_hash('admin123')
@@ -184,6 +185,7 @@ def init_db():
                     "INSERT INTO usuarios (username, password, rol) VALUES (%s, %s, 'admin')",
                     ('admin', hashed)
                 )
+            # Tabla parametros (con todos los campos necesarios)
             cur.execute('''
                 CREATE TABLE IF NOT EXISTS parametros (
                     id SERIAL PRIMARY KEY,
@@ -210,6 +212,7 @@ def init_db():
                     "ON CONFLICT (clave) DO UPDATE SET valor = EXCLUDED.valor",
                     (clave, valor, desc)
                 )
+            # Tabla cestaticket_lotes
             cur.execute('''
                 CREATE TABLE IF NOT EXISTS cestaticket_lotes (
                     id_lote SERIAL PRIMARY KEY,
@@ -220,6 +223,7 @@ def init_db():
                     tasa_bcv DECIMAL(12,4)
                 )
             ''')
+            # Tabla cestaticket_nominas
             cur.execute('''
                 CREATE TABLE IF NOT EXISTS cestaticket_nominas (
                     id SERIAL PRIMARY KEY,
@@ -235,20 +239,52 @@ def init_db():
                     lote_id INTEGER
                 )
             ''')
+            # Tabla audit_log (auditoría)
+            cur.execute('''
+                CREATE TABLE IF NOT EXISTS audit_log (
+                    id SERIAL PRIMARY KEY,
+                    tabla TEXT,
+                    registro_id INTEGER,
+                    accion TEXT,
+                    usuario TEXT,
+                    datos_anteriores JSONB,
+                    datos_nuevos JSONB,
+                    ip_address TEXT,
+                    created_at TIMESTAMP DEFAULT NOW()
+                )
+            ''')
+            # Índices
             cur.execute('CREATE INDEX IF NOT EXISTS idx_nominas_lote ON nominas(lote_id)')
             cur.execute('CREATE INDEX IF NOT EXISTS idx_nominas_empleado ON nominas(id_empleado)')
             cur.execute('CREATE INDEX IF NOT EXISTS idx_nominas_fechas ON nominas(fecha_inicio, fecha_fin)')
             cur.execute('CREATE INDEX IF NOT EXISTS idx_empleados_activo ON empleados(activo)')
-            logger.info("✅ Base de datos inicializada correctamente.")
+            cur.execute('CREATE INDEX IF NOT EXISTS idx_audit_created ON audit_log(created_at)')
+            logger.info("✅ Base de datos inicializada/migrada correctamente.")
     except Exception as e:
         logger.error(f"❌ Error en init_db: {e}")
 
-# ---------- DECORADOR DE AUTENTICACIÓN ----------
+# ---------- DECORADORES ----------
 def login_required(f):
     @wraps(f)
     def wrapper(*args, **kwargs):
         if 'user_id' not in session:
             return jsonify({'error': 'No autorizado'}), 401
+        g.user_id = session['user_id']
+        g.username = session.get('username', 'desconocido')
+        # Obtener rol de la BD
+        with get_cursor(dict_cursor=True) as cur:
+            cur.execute("SELECT rol FROM usuarios WHERE id = %s", (g.user_id,))
+            row = cur.fetchone()
+            g.rol = row['rol'] if row else 'operador'
+        return f(*args, **kwargs)
+    return wrapper
+
+def admin_required(f):
+    @wraps(f)
+    @login_required
+    def wrapper(*args, **kwargs):
+        if g.rol != 'admin':
+            return jsonify({'error': 'Se requiere rol de administrador'}), 403
         return f(*args, **kwargs)
     return wrapper
 
@@ -268,7 +304,7 @@ def validate_dates(fecha_inicio, fecha_fin):
     except ValueError:
         raise ValidationError("Formato de fecha inválido. Use YYYY-MM-DD")
 
-# ---------- FUNCIONES DE AYUDA ----------
+# ---------- FUNCIONES DE PARÁMETROS ----------
 def get_param(clave, default=None):
     with get_cursor() as cur:
         cur.execute("SELECT valor FROM parametros WHERE clave = %s", (clave,))
@@ -292,12 +328,18 @@ def get_param_all():
                 params[r['clave']] = r['valor']
         return params
 
-def update_param(clave, valor):
+def update_param(clave, valor, usuario=None):
     with get_cursor(commit=True) as cur:
         cur.execute(
             "UPDATE parametros SET valor = %s, fecha_actualizacion = CURRENT_DATE WHERE clave = %s",
             (str(valor), clave)
         )
+        # Audit simple (se puede expandir)
+        if usuario:
+            cur.execute(
+                "INSERT INTO audit_log (tabla, accion, usuario, datos_nuevos) VALUES (%s, %s, %s, %s)",
+                ('parametros', 'ACTUALIZAR', usuario, json.dumps({clave: str(valor)}))
+            )
 
 # ---------- EMPLEADOS ----------
 def get_empleados(search='', sucursal_id=None, tipo_pago=None, limit=100, offset=0):
@@ -324,8 +366,9 @@ def get_empleado_by_id(id):
         cur.execute("SELECT * FROM empleados WHERE id_empleado = %s", (id,))
         return cur.fetchone()
 
-def create_empleado(data):
+def create_empleado(data, usuario=None):
     with get_cursor(commit=True) as cur:
+        # Validar cédula única
         cur.execute("SELECT id_empleado FROM empleados WHERE cedula = %s", (data['cedula'],))
         if cur.fetchone():
             raise ValidationError("Ya existe un empleado con esa cédula")
@@ -348,10 +391,20 @@ def create_empleado(data):
             data.get('email'), data.get('telefono'), data.get('direccion'),
             data.get('cuenta_bancaria'), data.get('banco_codigo')
         ))
-        return cur.fetchone()[0]
+        new_id = cur.fetchone()[0]
+        # Audit
+        if usuario:
+            cur.execute(
+                "INSERT INTO audit_log (tabla, registro_id, accion, usuario, datos_nuevos) VALUES (%s, %s, %s, %s, %s)",
+                ('empleados', new_id, 'CREAR', usuario, json.dumps(data))
+            )
+        return new_id
 
-def update_empleado(id, data):
+def update_empleado(id, data, usuario=None):
     with get_cursor(commit=True) as cur:
+        # Obtener datos anteriores para audit
+        cur.execute("SELECT * FROM empleados WHERE id_empleado = %s", (id,))
+        old_data = cur.fetchone()
         cur.execute('''
             UPDATE empleados SET
                 cedula=%s, nombres=%s, apellidos=%s,
@@ -373,10 +426,21 @@ def update_empleado(id, data):
             data.get('cuenta_bancaria'), data.get('banco_codigo'),
             id
         ))
+        # Audit
+        if usuario:
+            cur.execute(
+                "INSERT INTO audit_log (tabla, registro_id, accion, usuario, datos_anteriores, datos_nuevos) VALUES (%s, %s, %s, %s, %s, %s)",
+                ('empleados', id, 'ACTUALIZAR', usuario, json.dumps(old_data), json.dumps(data))
+            )
 
-def delete_empleado(id):
+def delete_empleado(id, usuario=None):
     with get_cursor(commit=True) as cur:
         cur.execute("UPDATE empleados SET activo = FALSE WHERE id_empleado = %s", (id,))
+        if usuario:
+            cur.execute(
+                "INSERT INTO audit_log (tabla, registro_id, accion, usuario) VALUES (%s, %s, %s, %s)",
+                ('empleados', id, 'ELIMINAR', usuario)
+            )
 
 # ---------- SUCURSALES ----------
 def get_sucursales():
@@ -384,14 +448,25 @@ def get_sucursales():
         cur.execute("SELECT * FROM sucursales WHERE activo = TRUE ORDER BY nombre")
         return cur.fetchall()
 
-def create_sucursal(nombre):
+def create_sucursal(nombre, usuario=None):
     with get_cursor(commit=True) as cur:
         cur.execute("INSERT INTO sucursales (nombre) VALUES (%s) RETURNING id_sucursal", (nombre,))
-        return cur.fetchone()[0]
+        new_id = cur.fetchone()[0]
+        if usuario:
+            cur.execute(
+                "INSERT INTO audit_log (tabla, registro_id, accion, usuario, datos_nuevos) VALUES (%s, %s, %s, %s, %s)",
+                ('sucursales', new_id, 'CREAR', usuario, json.dumps({'nombre': nombre}))
+            )
+        return new_id
 
-def delete_sucursal(id):
+def delete_sucursal(id, usuario=None):
     with get_cursor(commit=True) as cur:
         cur.execute("UPDATE sucursales SET activo = FALSE WHERE id_sucursal = %s", (id,))
+        if usuario:
+            cur.execute(
+                "INSERT INTO audit_log (tabla, registro_id, accion, usuario) VALUES (%s, %s, %s, %s)",
+                ('sucursales', id, 'ELIMINAR', usuario)
+            )
 
 # ---------- CÁLCULO DE NÓMINA ----------
 def procesar_empleado(emp, tipo, fecha_inicio, fecha_fin, faltas, horas, valor_hora, bono, salario_override, aplicar_deducciones):
@@ -545,6 +620,11 @@ def calcular_y_guardar_nomina(data, usuario):
                     calc['faov_usd'] * calc['tasa_bcv'],
                     descripcion, lote_id
                 ))
+            # Audit
+            cur.execute(
+                "INSERT INTO audit_log (tabla, registro_id, accion, usuario, datos_nuevos) VALUES (%s, %s, %s, %s, %s)",
+                ('lotes_nomina', lote_id, 'CALCULAR', usuario, json.dumps({'total_usd': str(total_usd_lote), 'total_bs': str(total_bs_lote)}))
+            )
 
     return {
         'tasa_bcv': tasa_bcv,
@@ -604,9 +684,10 @@ def get_dashboard_stats():
 
     return stats
 
-# ---------- GENERAR TXT ----------
+# ---------- GENERAR TXT (CORREGIDO) ----------
 def generar_txt_provision(lote_id, tipo='100'):
     with get_cursor(dict_cursor=True) as cur:
+        # Obtener parámetros de la empresa (¡YA NO SE FUERZAN A VACÍO!)
         params = {}
         for clave in ['rif_empresa', 'cuenta_empresa', 'nombre_cuenta_empresa', 'codigo_banco_defecto']:
             cur.execute("SELECT valor FROM parametros WHERE clave = %s", (clave,))
@@ -768,7 +849,7 @@ def get_empleado(id):
 def create_empleado_route():
     try:
         data = request.json
-        new_id = create_empleado(data)
+        new_id = create_empleado(data, g.username)
         return jsonify({'mensaje': 'Empleado creado', 'id': new_id})
     except ValidationError as e:
         return jsonify({'error': str(e)}), 400
@@ -781,7 +862,7 @@ def create_empleado_route():
 def update_empleado_route(id):
     try:
         data = request.json
-        update_empleado(id, data)
+        update_empleado(id, data, g.username)
         return jsonify({'mensaje': 'Empleado actualizado'})
     except ValidationError as e:
         return jsonify({'error': str(e)}), 400
@@ -793,7 +874,7 @@ def update_empleado_route(id):
 @login_required
 def delete_empleado_route(id):
     try:
-        delete_empleado(id)
+        delete_empleado(id, g.username)
         return jsonify({'mensaje': 'Empleado eliminado (desactivado)'})
     except Exception as e:
         return jsonify({'error': str(e)}), 500
@@ -815,7 +896,7 @@ def create_sucursal_route():
     if not nombre:
         return jsonify({'error': 'Nombre es requerido'}), 400
     try:
-        new_id = create_sucursal(nombre)
+        new_id = create_sucursal(nombre, g.username)
         return jsonify({'mensaje': 'Sucursal creada', 'id': new_id})
     except Exception as e:
         return jsonify({'error': str(e)}), 500
@@ -824,7 +905,7 @@ def create_sucursal_route():
 @login_required
 def delete_sucursal_route(id):
     try:
-        delete_sucursal(id)
+        delete_sucursal(id, g.username)
         return jsonify({'mensaje': 'Sucursal eliminada'})
     except Exception as e:
         return jsonify({'error': str(e)}), 500
@@ -851,7 +932,7 @@ def update_parametro_route():
     if not clave or valor is None:
         return jsonify({'error': 'Clave y valor son requeridos'}), 400
     try:
-        update_param(clave, valor)
+        update_param(clave, valor, g.username)
         return jsonify({'mensaje': 'Parámetro actualizado'})
     except Exception as e:
         return jsonify({'error': str(e)}), 500
@@ -864,7 +945,7 @@ def actualizar_bcv():
         if response.status_code == 200:
             data = response.json()
             new_rate = Decimal(str(data['promedio']))
-            update_param('tasa_bcv', new_rate)
+            update_param('tasa_bcv', new_rate, g.username)
             return jsonify({'tasa': float(new_rate), 'mensaje': 'Tasa BCV actualizada'})
         return jsonify({'error': 'No se pudo obtener la tasa'}), 500
     except Exception as e:
@@ -875,7 +956,7 @@ def actualizar_bcv():
 def calcular_nomina():
     try:
         data = request.json
-        result = calcular_y_guardar_nomina(data, session.get('username'))
+        result = calcular_y_guardar_nomina(data, g.username)
         def convert(obj):
             if isinstance(obj, Decimal):
                 return float(obj)
@@ -982,7 +1063,7 @@ def generar_archivo_pago(lote_id):
         logger.error(f"Error generando TXT: {e}")
         return jsonify({'error': str(e)}), 500
 
-# ================== CESTATICKET (Básico) ==================
+# ================== CESTATICKET ==================
 @app.route('/api/calcular_cestaticket', methods=['POST'])
 @login_required
 def calcular_cestaticket():
@@ -1024,7 +1105,7 @@ def calcular_cestaticket():
                     'id_empleado': emp['id_empleado'],
                     'cedula': emp['cedula'],
                     'nombre_completo': f"{emp['nombres']} {emp['apellidos']}",
-                    'dias_totales_periodo': 30,  # placeholder
+                    'dias_totales_periodo': 30,
                     'valor_mensual_usd': valor_mensual_usd,
                     'valor_diario_usd': valor_diario_usd,
                     'faltas': faltas,
@@ -1102,14 +1183,12 @@ def delete_lote_cestaticket(id):
 @login_required
 def generar_archivo_cestaticket(lote_id):
     try:
-        # Similar a generar_txt_provision pero para cestaticket
-        # Por simplicidad, omitimos la generación del TXT de cestaticket aquí
-        # Se puede agregar después
+        # Esta función se puede implementar si se requiere TXT de cestaticket
         return jsonify({'error': 'Función en desarrollo'}), 501
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
-# ---------- USUARIOS (Básico) ----------
+# ================== USUARIOS ==================
 @app.route('/api/usuarios', methods=['GET'])
 @login_required
 def get_usuarios():
@@ -1136,6 +1215,10 @@ def crear_usuario():
             (username, hashed, rol)
         )
         new_id = cur.fetchone()[0]
+        cur.execute(
+            "INSERT INTO audit_log (tabla, registro_id, accion, usuario, datos_nuevos) VALUES (%s, %s, %s, %s, %s)",
+            ('usuarios', new_id, 'CREAR', g.username, json.dumps({'username': username, 'rol': rol}))
+        )
         return jsonify({'mensaje': 'Usuario creado', 'id': new_id})
 
 @app.route('/api/usuarios/<int:id>', methods=['DELETE'])
@@ -1145,6 +1228,10 @@ def eliminar_usuario(id):
         return jsonify({'error': 'No puedes eliminar tu propio usuario'}), 400
     with get_cursor(commit=True) as cur:
         cur.execute("DELETE FROM usuarios WHERE id = %s", (id,))
+        cur.execute(
+            "INSERT INTO audit_log (tabla, registro_id, accion, usuario) VALUES (%s, %s, %s, %s)",
+            ('usuarios', id, 'ELIMINAR', g.username)
+        )
         return jsonify({'mensaje': 'Usuario eliminado'})
 
 @app.route('/api/usuarios/password', methods=['PUT'])
@@ -1165,15 +1252,28 @@ def cambiar_password():
         cur.execute("UPDATE usuarios SET password = %s WHERE id = %s", (hashed, user_id))
         return jsonify({'mensaje': 'Contraseña actualizada'})
 
-# ---------- ERROR HANDLERS ----------
-@app.errorhandler(ValidationError)
-def handle_validation_error(e):
-    return jsonify({'error': str(e)}), 400
-
-@app.errorhandler(Exception)
-def handle_generic_error(e):
-    logger.error(f"Error no manejado: {e}")
-    return jsonify({'error': 'Error interno del servidor'}), 500
+# ================== PASIVOS ==================
+@app.route('/api/calcular_pasivos', methods=['POST'])
+@login_required
+def calcular_pasivos():
+    try:
+        data = request.json
+        salario = Decimal(str(data.get('salario_mensual', 0)))
+        dias = int(data.get('dias', 60))
+        usar_base_60 = data.get('usar_base_60', True)
+        if salario <= 0:
+            return jsonify({'error': 'Salario inválido'}), 400
+        tasa_bcv = get_param('tasa_bcv', Decimal('755.1552'))
+        base = salario * Decimal('0.6') if usar_base_60 else salario
+        total_usd = base * (Decimal(dias) / Decimal('30'))
+        total_bs = total_usd * tasa_bcv
+        return jsonify({
+            'total_usd': float(total_usd),
+            'total_bs': float(total_bs),
+            'tasa_bcv': float(tasa_bcv)
+        })
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
 # ================== INICIO ==================
 if __name__ == '__main__':
